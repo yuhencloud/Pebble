@@ -1,8 +1,8 @@
 :root {
-  --bg: #0d0d10;
-  --surface: rgba(255, 255, 255, 0.04);
-  --text: #e8e8e8;
-  --muted: #8f8f8f;
+  --bg: #000000;
+  --surface: rgba(255, 255, 255, 0.05);
+  --text: #ebebeb;
+  --muted: #9e9e9e;
   --accent: #6366f1;
   --waiting: #f59e0b;
   --executing: #10b981;
@@ -36,7 +36,18 @@ body,
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+  position: relative;
+}
+
+.panel::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent 5%, rgba(255,255,255,0.18) 50%, transparent 95%);
+  pointer-events: none;
 }
 
 .compact-header {

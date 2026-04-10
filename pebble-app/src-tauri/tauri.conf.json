@@ -22,7 +22,9 @@
         "alwaysOnTop": true,
         "decorations": false,
         "shadow": false,
+        "transparent": false,
         "skipTaskbar": true,
+        "backgroundColor": "#000000",
         "visible": true,
         "focus": false,
         "center": false
