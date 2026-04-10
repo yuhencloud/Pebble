@@ -18,6 +18,15 @@ const HOOK_PORT: u16 = 9876;
 const EXECUTING_TIMEOUT_SECS: u64 = 8;
 
 #[derive(Serialize, Clone, Debug)]
+struct PendingPermission {
+    tool_name: String,
+    tool_use_id: String,
+    prompt: String,
+    choices: Vec<String>,
+    default_choice: Option<String>,
+}
+
+#[derive(Serialize, Clone, Debug)]
 struct Instance {
     id: String,
     pid: u32,
@@ -25,6 +34,8 @@ struct Instance {
     working_directory: String,
     terminal_app: String,
     last_activity: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pending_permission: Option<PendingPermission>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -32,6 +43,14 @@ struct HookEvent {
     event: String,
     cwd: String,
     timestamp: u64,
+    #[serde(default)]
+    tool_name: Option<String>,
+    #[serde(default, rename = "tool_input")]
+    tool_input: Option<serde_json::Value>,
+    #[serde(default, rename = "permission_mode")]
+    permission_mode: Option<String>,
+    #[serde(default, rename = "tool_use_id")]
+    tool_use_id: Option<String>,
 }
 
 struct AppState {
@@ -70,6 +89,39 @@ fn jump_to_terminal(instance_id: String, state: State<'_, AppState>) -> Result<(
     Ok(())
 }
 
+#[tauri::command]
+fn respond_permission(
+    instance_id: String,
+    choice: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let instance = {
+        let map = state.instances.lock().unwrap();
+        map.values()
+            .find(|i| i.id == instance_id)
+            .cloned()
+            .ok_or("Instance not found")?
+    };
+
+    if instance.terminal_app == "iTerm2" {
+        if let Some(tty) = get_process_tty(instance.pid) {
+            inject_keystroke_to_iterm2(&tty, &choice).map_err(|e| e.to_string())?;
+        } else {
+            return Err("TTY not found".to_string());
+        }
+    } else {
+        return Err("Permission response only supported for iTerm2".to_string());
+    }
+
+    let mut map = state.instances.lock().unwrap();
+    if let Some(inst) = map.values_mut().find(|i| i.id == instance_id) {
+        inst.status = "executing".to_string();
+        inst.pending_permission = None;
+    }
+
+    Ok(())
+}
+
 fn get_process_tty(pid: u32) -> Option<String> {
     if pid == 0 {
         return None;
@@ -102,7 +154,8 @@ fn activate_iterm2() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn activate_iterm2_session(tty: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let script = format!(r#"
+    let script = format!(
+        r#"
         tell application "iTerm2"
             repeat with aWindow in windows
                 repeat with aTab in tabs of aWindow
@@ -124,7 +177,9 @@ fn activate_iterm2_session(tty: &str) -> Result<(), Box<dyn std::error::Error>> 
             end repeat
             activate
         end tell
-    "#, tty);
+    "#,
+        tty
+    );
 
     Command::new("osascript")
         .arg("-e")
@@ -132,6 +187,185 @@ fn activate_iterm2_session(tty: &str) -> Result<(), Box<dyn std::error::Error>> 
         .output()?;
 
     Ok(())
+}
+
+fn inject_keystroke_to_iterm2(tty: &str, text: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let escaped = text.replace("\"", "\\\"");
+    let script = format!(
+        r#"
+        tell application "iTerm2"
+            repeat with aWindow in windows
+                repeat with aTab in tabs of aWindow
+                    repeat with aSession in sessions of aTab
+                        if tty of aSession contains "{}" then
+                            tell aSession
+                                write text "{}"
+                            end tell
+                            tell aWindow
+                                select
+                            end tell
+                            tell aTab
+                                select
+                            end tell
+                            tell aSession
+                                select
+                            end tell
+                            return
+                        end if
+                    end repeat
+                end repeat
+            end repeat
+            activate
+        end tell
+    "#,
+        tty, escaped
+    );
+
+    Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .output()?;
+
+    Ok(())
+}
+
+fn read_iterm2_last_lines(tty: &str, n: usize) -> Vec<String> {
+    let n_lines = n.max(1);
+    let script = format!(
+        r#"
+        tell application "iTerm2"
+            repeat with aWindow in windows
+                repeat with aTab in tabs of aWindow
+                    repeat with aSession in sessions of aTab
+                        if tty of aSession contains "{}" then
+                            set sessionContents to contents of aSession
+                            set allLines to paragraphs of sessionContents
+                            set totalLines to count of allLines
+                            set startLine to totalLines - {}
+                            if startLine < 1 then set startLine to 1
+                            set resultLines to {{}}
+                            repeat with i from startLine to totalLines
+                                set end of resultLines to item i of allLines
+                            end repeat
+                            set AppleScript's text item delimiters to linefeed
+                            return resultLines as string
+                        end if
+                    end repeat
+                end repeat
+            end repeat
+            return ""
+        end tell
+    "#,
+        tty, n_lines
+    );
+
+    match Command::new("osascript").arg("-e").arg(&script).output() {
+        Ok(out) => {
+            let text = String::from_utf8_lossy(&out.stdout);
+            text.lines().map(|s| s.to_string()).collect()
+        }
+        Err(_) => Vec::new(),
+    }
+}
+
+fn parse_permission_choices(lines: &[String]) -> Option<PendingPermission> {
+    let mut prompt_idx = None;
+    for (i, line) in lines.iter().enumerate().rev() {
+        let trimmed = line.trim();
+        if trimmed.ends_with('?') || trimmed.ends_with(':') {
+            if trimmed.len() > 5 {
+                prompt_idx = Some(i);
+                break;
+            }
+        }
+    }
+    let prompt_idx = prompt_idx?;
+
+    let prompt = lines[prompt_idx].trim().to_string();
+    let mut choices: Vec<String> = Vec::new();
+    let mut default_choice: Option<String> = None;
+
+    for line in lines.iter().skip(prompt_idx + 1) {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let is_selected = trimmed.starts_with("> ")
+            || trimmed.starts_with("❯ ")
+            || trimmed.starts_with("● ")
+            || trimmed.starts_with("* ");
+
+        let clean = if trimmed.starts_with("> ") {
+            &trimmed[2..]
+        } else if trimmed.starts_with("❯ ") {
+            &trimmed["❯ ".len()..]
+        } else if trimmed.starts_with("● ") {
+            &trimmed["● ".len()..]
+        } else if trimmed.starts_with("* ") {
+            &trimmed[2..]
+        } else if trimmed.starts_with("- ") {
+            &trimmed[2..]
+        } else if trimmed.starts_with("○ ") || trimmed.starts_with("◯ ") {
+            &trimmed["○ ".len()..]
+        } else if trimmed.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false)
+            && trimmed.chars().nth(1) == Some('.')
+        {
+            trimmed[2..].trim_start()
+        } else {
+            if choices.is_empty() {
+                continue;
+            } else {
+                break;
+            }
+        };
+
+        let clean = clean.trim().to_string();
+        if !clean.is_empty() {
+            if is_selected && default_choice.is_none() {
+                default_choice = Some(clean.clone());
+            }
+            choices.push(clean);
+        }
+    }
+
+    if choices.is_empty() {
+        None
+    } else {
+        Some(PendingPermission {
+            tool_name: "Claude".to_string(),
+            tool_use_id: "".to_string(),
+            prompt,
+            choices,
+            default_choice,
+        })
+    }
+}
+
+fn default_choices_for_tool(tool_name: &str) -> Vec<String> {
+    match tool_name {
+        "Bash" => vec![
+            "Yes".to_string(),
+            "No".to_string(),
+            "Always allow Bash".to_string(),
+        ],
+        "Edit" => vec![
+            "Yes".to_string(),
+            "No".to_string(),
+            "Always allow Edit".to_string(),
+        ],
+        "Write" => vec![
+            "Yes".to_string(),
+            "No".to_string(),
+            "Always allow Write".to_string(),
+        ],
+        "Read" => vec![
+            "Yes".to_string(),
+            "No".to_string(),
+            "Always allow Read".to_string(),
+        ],
+        _ => vec!["Yes".to_string(), "No".to_string()],
+    }
 }
 
 fn discover_instances() -> HashMap<String, Instance> {
@@ -175,6 +409,7 @@ fn discover_instances() -> HashMap<String, Instance> {
                     working_directory: cwd,
                     terminal_app: terminal,
                     last_activity: 0,
+                    pending_permission: None,
                 },
             );
         }
@@ -209,7 +444,11 @@ fn detect_terminal_app(pid: u32, ps_output: &str) -> String {
         if let Some(line) = line {
             let parts: Vec<&str> = line.split_whitespace().collect();
             let comm = parts[2].to_lowercase();
-            let args = if parts.len() > 3 { parts[3..].join(" ").to_lowercase() } else { String::new() };
+            let args = if parts.len() > 3 {
+                parts[3..].join(" ").to_lowercase()
+            } else {
+                String::new()
+            };
             let full = format!("{} {}", comm, args);
             if full.contains("iterm2") || full.contains("iterm") {
                 return "iTerm2".to_string();
@@ -234,7 +473,7 @@ fn detect_terminal_app(pid: u32, ps_output: &str) -> String {
 }
 
 fn handle_http_request(mut stream: TcpStream, instances: Arc<Mutex<HashMap<String, Instance>>>) {
-    let mut buf = [0u8; 4096];
+    let mut buf = [0u8; 65536];
     if let Ok(n) = stream.read(&mut buf) {
         let req = String::from_utf8_lossy(&buf[..n]);
         let first_line = req.lines().next().unwrap_or("");
@@ -285,35 +524,100 @@ fn update_instance_from_hook(
     instances: Arc<Mutex<HashMap<String, Instance>>>,
     event: &HookEvent,
 ) {
+    let instances_for_scrape = instances.clone();
     let mut map = instances.lock().unwrap();
 
-    // Find instance by working directory
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
 
-    let matched = map
-        .values_mut()
-        .find(|i| i.working_directory == event.cwd);
+    let is_permission_event = event.event == "PreToolUse"
+        && !matches!(
+            event.permission_mode.as_deref(),
+            Some("bypassPermissions" | "dontAsk" | "auto" | "acceptEdits")
+        );
+
+    let matched = map.values_mut().find(|i| i.working_directory == event.cwd);
 
     if let Some(instance) = matched {
-        let new_status = match event.event.as_str() {
-            "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PostToolUseFailure" => {
-                "executing"
+        let new_status = if is_permission_event {
+            "needs_permission"
+        } else {
+            match event.event.as_str() {
+                "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PostToolUseFailure" => {
+                    "executing"
+                }
+                _ => "waiting",
             }
-            _ => "waiting",
         };
         instance.status = new_status.to_string();
         instance.last_activity = now_secs;
+
+        if is_permission_event {
+            let tool_name = event.tool_name.clone().unwrap_or_else(|| "Tool".to_string());
+            let tool_use_id = event.tool_use_id.clone().unwrap_or_default();
+            let desc = event
+                .tool_input
+                .as_ref()
+                .and_then(|v| v.get("description"))
+                .and_then(|d| d.as_str())
+                .unwrap_or("");
+            let default_prompt = if desc.is_empty() {
+                format!("{} wants to run", tool_name)
+            } else {
+                format!("{}: {}", tool_name, desc)
+            };
+
+            let default_choices = default_choices_for_tool(&tool_name);
+            instance.pending_permission = Some(PendingPermission {
+                tool_name: tool_name.clone(),
+                tool_use_id: tool_use_id.clone(),
+                prompt: default_prompt,
+                choices: default_choices.clone(),
+                default_choice: default_choices.first().cloned(),
+            });
+
+            let tty = get_process_tty(instance.pid);
+            let id = instance.id.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(400));
+                let lines = tty.as_ref().map(|t| read_iterm2_last_lines(t, 30)).unwrap_or_default();
+                if let Some(parsed) = parse_permission_choices(&lines) {
+                    let mut map = instances_for_scrape.lock().unwrap();
+                    if let Some(inst) = map.get_mut(&id) {
+                        if inst.status == "needs_permission"
+                            && inst
+                                .pending_permission
+                                .as_ref()
+                                .map(|p| p.tool_use_id == tool_use_id)
+                                .unwrap_or(false)
+                        {
+                            inst.pending_permission = Some(PendingPermission {
+                                tool_name: inst.pending_permission.as_ref().unwrap().tool_name.clone(),
+                                tool_use_id,
+                                prompt: parsed.prompt,
+                                choices: parsed.choices,
+                                default_choice: parsed.default_choice,
+                            });
+                        }
+                    }
+                }
+            });
+        } else {
+            instance.pending_permission = None;
+        }
     } else {
-        // Instance not yet discovered, inject it
         let id = format!("cc-{}", event.timestamp);
-        let status = match event.event.as_str() {
-            "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PostToolUseFailure" => {
-                "executing"
+        let status = if is_permission_event {
+            "needs_permission"
+        } else {
+            match event.event.as_str() {
+                "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PostToolUseFailure" => {
+                    "executing"
+                }
+                _ => "waiting",
             }
-            _ => "waiting",
         };
         map.insert(
             id.clone(),
@@ -324,6 +628,7 @@ fn update_instance_from_hook(
                 working_directory: event.cwd.clone(),
                 terminal_app: "Unknown".to_string(),
                 last_activity: now_secs,
+                pending_permission: None,
             },
         );
     }
@@ -345,7 +650,6 @@ fn start_state_monitor(
                 .unwrap()
                 .as_secs();
 
-            // Rediscover processes and merge
             let discovered = discover_instances();
             let mut new_map = HashMap::new();
 
@@ -354,25 +658,25 @@ fn start_state_monitor(
                 if let Some(existing) = map.get(&id) {
                     merged.status = existing.status.clone();
                     merged.last_activity = existing.last_activity;
+                    merged.pending_permission = existing.pending_permission.clone();
                 }
                 new_map.insert(id.clone(), merged);
                 notified_map.remove(&id);
             }
 
-            // Carry over hook-injected instances that are not yet discovered by ps
             for (id, inst) in map.iter() {
                 if !new_map.contains_key(id) && inst.pid == 0 {
-                    // Keep only if recently active (within 60s)
                     if inst.last_activity > 0 && now_secs - inst.last_activity < 60 {
                         new_map.insert(id.clone(), inst.clone());
                     }
                 }
             }
 
-            // Timeout executing -> waiting + notify
             for (id, inst) in new_map.iter_mut() {
                 if inst.status == "executing" {
-                    if inst.last_activity > 0 && now_secs - inst.last_activity > EXECUTING_TIMEOUT_SECS {
+                    if inst.last_activity > 0
+                        && now_secs - inst.last_activity > EXECUTING_TIMEOUT_SECS
+                    {
                         inst.status = "waiting".to_string();
                         if !notified_map.get(id).copied().unwrap_or(false) {
                             notified_map.insert(id.clone(), true);
@@ -406,22 +710,37 @@ import http from "http";
 const eventType = process.argv[2] || "unknown";
 const cwd = process.cwd();
 const timestamp = Date.now();
-const payload = JSON.stringify({ event: eventType, cwd, timestamp });
-const req = http.request({
-  hostname: "127.0.0.1",
-  port: 9876,
-  path: "/hook",
-  method: "POST",
-  headers: {
-    "Content-Type": "application/json",
-    "Content-Length": Buffer.byteLength(payload),
-  },
-  timeout: 500,
-}, () => process.exit(0));
-req.on("error", () => process.exit(0));
-req.on("timeout", () => { req.destroy(); process.exit(0); });
-req.write(payload);
-req.end();
+
+let stdinData = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", chunk => { stdinData += chunk; });
+process.stdin.on("end", () => {
+  let body = { event: eventType, cwd, timestamp };
+  if (stdinData.trim()) {
+    try {
+      const parsed = JSON.parse(stdinData);
+      body = { ...parsed, ...body };
+    } catch (e) {
+      body.stdin = stdinData;
+    }
+  }
+  const payload = JSON.stringify(body);
+  const req = http.request({
+    hostname: "127.0.0.1",
+    port: 9876,
+    path: "/hook",
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Content-Length": Buffer.byteLength(payload),
+    },
+    timeout: 500,
+  }, () => process.exit(0));
+  req.on("error", () => process.exit(0));
+  req.on("timeout", () => { req.destroy(); process.exit(0); });
+  req.write(payload);
+  req.end();
+});
 "#;
 
     if let Ok(existing) = fs::read_to_string(&script_path) {
@@ -454,6 +773,7 @@ fn ensure_claude_hooks_config(script_path: &std::path::Path) {
 
     let pebble_hooks = serde_json::json!({
         "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": format!("{} UserPromptSubmit", command_str) }] }],
+        "PreToolUse": [{ "hooks": [{ "type": "command", "command": format!("{} PreToolUse", command_str) }] }],
         "PostToolUse": [{ "hooks": [{ "type": "command", "command": format!("{} PostToolUse", command_str) }] }],
         "Stop": [{ "hooks": [{ "type": "command", "command": format!("{} Stop", command_str) }] }]
     });
@@ -496,7 +816,7 @@ fn main() {
             start_state_monitor(instances.clone(), app.handle().clone());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_instances, jump_to_terminal])
+        .invoke_handler(tauri::generate_handler![get_instances, jump_to_terminal, respond_permission])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- GUI-based permission approvals for Claude Code
+  - `PreToolUse` hook integration to detect permission requests
+  - Real-time iTerm2 terminal output scraping to parse exact menu choices
+  - Pebble panel displays tool name, description, and all available choices
+  - Default choice highlighted for quick one-click approval
+  - One-click response injects the selected choice into the correct iTerm2 pane
+
 ## [0.1.0] - 2026-04-11
 
 ### Added

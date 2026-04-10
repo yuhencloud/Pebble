@@ -6,6 +6,7 @@
   --waiting: #f59e0b;
   --executing: #10b981;
   --completed: #3b82f6;
+  --needs-permission: #f43f5e;
   --radius: 12px;
 }
 
@@ -109,6 +110,12 @@ body,
   border-left: 2px solid var(--waiting);
 }
 
+.instance--needs_permission {
+  border-left: 2px solid var(--needs-permission);
+  background: rgba(244, 63, 94, 0.08);
+  border-color: rgba(244, 63, 94, 0.2);
+}
+
 .instance-header {
   display: flex;
   align-items: center;
@@ -134,6 +141,11 @@ body,
 
 .status-dot--completed {
   background: var(--completed);
+}
+
+.status-dot--needs_permission {
+  background: var(--needs-permission);
+  box-shadow: 0 0 6px var(--needs-permission);
 }
 
 .instance-status {
@@ -164,6 +176,55 @@ body,
   color: var(--muted);
   opacity: 0.7;
   margin-top: 2px;
+}
+
+.permission-card {
+  margin-top: 8px;
+  padding: 8px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 6px;
+  cursor: default;
+}
+
+.permission-prompt {
+  font-size: 11px;
+  color: var(--text);
+  margin-bottom: 8px;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.permission-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.permission-btn {
+  font-size: 11px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.permission-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.permission-btn--default {
+  background: rgba(99, 102, 241, 0.25);
+  border-color: rgba(99, 102, 241, 0.5);
+  font-weight: 500;
+}
+
+.permission-btn--default:hover {
+  background: rgba(99, 102, 241, 0.4);
 }
 
 .footer {
