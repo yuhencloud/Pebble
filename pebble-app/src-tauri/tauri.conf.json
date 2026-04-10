@@ -13,8 +13,8 @@
       {
         "label": "main",
         "title": "Pebble",
-        "width": 280,
-        "height": 400,
+        "width": 300,
+        "height": 52,
         "resizable": false,
         "maximizable": false,
         "minimizable": false,
@@ -25,9 +25,7 @@
         "skipTaskbar": true,
         "visible": true,
         "focus": false,
-        "center": false,
-        "x": 1000,
-        "y": 40
+        "center": false
       }
     ],
     "security": {

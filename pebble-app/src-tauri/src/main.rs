@@ -11,7 +11,7 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-use tauri::State;
+use tauri::{Manager, State};
 use tauri_plugin_notification::NotificationExt;
 
 const HOOK_PORT: u16 = 9876;
@@ -845,6 +845,21 @@ fn main() {
             instances: instances.clone(),
         })
         .setup(move |app| {
+            if let Some(window) = app.handle().get_webview_window("main") {
+                if let Ok(Some(monitor)) = window.current_monitor() {
+                    let size = monitor.size();
+                    let scale = monitor.scale_factor();
+                    let logical_width = size.width as f64 / scale;
+                    let w = 300.0;
+                    let x = (logical_width - w) / 2.0;
+                    let _ = window.set_position(tauri::Position::Logical(
+                        tauri::LogicalPosition { x, y: 0.0 }
+                    ));
+                    let _ = window.set_size(tauri::Size::Logical(
+                        tauri::LogicalSize { width: w, height: 52.0 }
+                    ));
+                }
+            }
             start_state_monitor(instances.clone(), app.handle().clone());
             Ok(())
         })
