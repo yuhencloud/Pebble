@@ -15,7 +15,7 @@ use tauri::State;
 use tauri_plugin_notification::NotificationExt;
 
 const HOOK_PORT: u16 = 9876;
-const EXECUTING_TIMEOUT_SECS: u64 = 8;
+const EXECUTING_TIMEOUT_SECS: u64 = 30;
 
 #[derive(Serialize, Clone, Debug)]
 struct PendingPermission {
@@ -103,9 +103,25 @@ fn respond_permission(
             .ok_or("Instance not found")?
     };
 
+    let perm = instance
+        .pending_permission
+        .ok_or("No pending permission for this instance")?;
+
+    let target_idx = perm
+        .choices
+        .iter()
+        .position(|c| c == &choice)
+        .ok_or("Invalid choice")?;
+    let default_idx = perm
+        .default_choice
+        .as_ref()
+        .and_then(|d| perm.choices.iter().position(|c| c == d))
+        .unwrap_or(0);
+
     if instance.terminal_app == "iTerm2" {
         if let Some(tty) = get_process_tty(instance.pid) {
-            inject_keystroke_to_iterm2(&tty, &choice).map_err(|e| e.to_string())?;
+            inject_permission_response_to_iterm2(&tty, target_idx, default_idx)
+                .map_err(|e| e.to_string())?;
         } else {
             return Err("TTY not found".to_string());
         }
@@ -189,8 +205,24 @@ fn activate_iterm2_session(tty: &str) -> Result<(), Box<dyn std::error::Error>> 
     Ok(())
 }
 
-fn inject_keystroke_to_iterm2(tty: &str, text: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let escaped = text.replace("\"", "\\\"");
+fn inject_permission_response_to_iterm2(
+    tty: &str,
+    target_idx: usize,
+    default_idx: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut key_lines = Vec::new();
+    if target_idx > default_idx {
+        for _ in 0..(target_idx - default_idx) {
+            key_lines.push(r#"                                write text (ASCII character 27) & "[B" newline NO"#);
+        }
+    } else if target_idx < default_idx {
+        for _ in 0..(default_idx - target_idx) {
+            key_lines.push(r#"                                write text (ASCII character 27) & "[A" newline NO"#);
+        }
+    }
+    key_lines.push(r#"                                write text (ASCII character 13) newline NO"#);
+    let keys_body = key_lines.join("\n");
+
     let script = format!(
         r#"
         tell application "iTerm2"
@@ -199,7 +231,7 @@ fn inject_keystroke_to_iterm2(tty: &str, text: &str) -> Result<(), Box<dyn std::
                     repeat with aSession in sessions of aTab
                         if tty of aSession contains "{}" then
                             tell aSession
-                                write text "{}"
+{}
                             end tell
                             tell aWindow
                                 select
@@ -218,7 +250,7 @@ fn inject_keystroke_to_iterm2(tty: &str, text: &str) -> Result<(), Box<dyn std::
             activate
         end tell
     "#,
-        tty, escaped
+        tty, keys_body
     );
 
     Command::new("osascript")
