@@ -11,8 +11,18 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 use tauri_plugin_notification::NotificationExt;
+
+#[cfg(target_os = "macos")]
+#[macro_use]
+extern crate objc;
+#[cfg(target_os = "macos")]
+use cocoa::appkit::{NSWindow, NSWindowCollectionBehavior};
+#[cfg(target_os = "macos")]
+use cocoa::base::id;
+#[cfg(target_os = "macos")]
+use cocoa::foundation::{NSPoint, NSRect};
 
 const HOOK_PORT: u16 = 9876;
 const EXECUTING_TIMEOUT_SECS: u64 = 30;
@@ -512,7 +522,9 @@ fn handle_http_request(mut stream: TcpStream, instances: Arc<Mutex<HashMap<Strin
 
         if first_line.starts_with("GET /instances") {
             let map = instances.lock().unwrap();
-            let list: Vec<Instance> = map.values().cloned().collect();
+            let mut list: Vec<Instance> = map.values().cloned().collect();
+            drop(map);
+            list.sort_by(|a, b| a.working_directory.cmp(&b.working_directory));
             let body = serde_json::to_string(&list).unwrap_or_else(|_| "[]".to_string());
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
@@ -573,15 +585,11 @@ fn update_instance_from_hook(
     let matched = map.values_mut().find(|i| i.working_directory == event.cwd);
 
     if let Some(instance) = matched {
-        let new_status = if is_permission_event {
-            "needs_permission"
-        } else {
-            match event.event.as_str() {
-                "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PostToolUseFailure" => {
-                    "executing"
-                }
-                _ => "waiting",
+        let new_status = match event.event.as_str() {
+            "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PostToolUseFailure" => {
+                "executing"
             }
+            _ => "waiting",
         };
         instance.status = new_status.to_string();
         instance.last_activity = now_secs;
@@ -589,50 +597,22 @@ fn update_instance_from_hook(
         if is_permission_event {
             let tool_name = event.tool_name.clone().unwrap_or_else(|| "Tool".to_string());
             let tool_use_id = event.tool_use_id.clone().unwrap_or_default();
-            let desc = event
-                .tool_input
-                .as_ref()
-                .and_then(|v| v.get("description"))
-                .and_then(|d| d.as_str())
-                .unwrap_or("");
-            let default_prompt = if desc.is_empty() {
-                format!("{} wants to run", tool_name)
-            } else {
-                format!("{}: {}", tool_name, desc)
-            };
-
-            let default_choices = default_choices_for_tool(&tool_name);
-            instance.pending_permission = Some(PendingPermission {
-                tool_name: tool_name.clone(),
-                tool_use_id: tool_use_id.clone(),
-                prompt: default_prompt,
-                choices: default_choices.clone(),
-                default_choice: default_choices.first().cloned(),
-            });
-
             let tty = get_process_tty(instance.pid);
             let id = instance.id.clone();
             thread::spawn(move || {
-                thread::sleep(Duration::from_millis(400));
+                thread::sleep(Duration::from_millis(500));
                 let lines = tty.as_ref().map(|t| read_iterm2_last_lines(t, 30)).unwrap_or_default();
                 if let Some(parsed) = parse_permission_choices(&lines) {
                     let mut map = instances_for_scrape.lock().unwrap();
                     if let Some(inst) = map.get_mut(&id) {
-                        if inst.status == "needs_permission"
-                            && inst
-                                .pending_permission
-                                .as_ref()
-                                .map(|p| p.tool_use_id == tool_use_id)
-                                .unwrap_or(false)
-                        {
-                            inst.pending_permission = Some(PendingPermission {
-                                tool_name: inst.pending_permission.as_ref().unwrap().tool_name.clone(),
-                                tool_use_id,
-                                prompt: parsed.prompt,
-                                choices: parsed.choices,
-                                default_choice: parsed.default_choice,
-                            });
-                        }
+                        inst.status = "needs_permission".to_string();
+                        inst.pending_permission = Some(PendingPermission {
+                            tool_name,
+                            tool_use_id,
+                            prompt: parsed.prompt,
+                            choices: parsed.choices,
+                            default_choice: parsed.default_choice,
+                        });
                     }
                 }
             });
@@ -727,7 +707,10 @@ fn start_state_monitor(
             }
 
             *map = new_map;
+            let mut list: Vec<Instance> = map.values().cloned().collect();
             drop(map);
+            list.sort_by(|a, b| a.working_directory.cmp(&b.working_directory));
+            let _ = app_handle.emit("instances-updated", list);
         }
     });
 }
@@ -831,6 +814,66 @@ fn ensure_claude_hooks_config(script_path: &std::path::Path) {
     }
 }
 
+#[cfg(target_os = "macos")]
+unsafe fn setup_notch_overlay(window: &tauri::WebviewWindow) {
+    if let Ok(raw) = window.ns_window() {
+        let ns_window: id = raw as id;
+        // Above menu bar level so macOS does not push us out of the notch area
+        ns_window.setLevel_(25);
+        ns_window.setCollectionBehavior_(
+            NSWindowCollectionBehavior::NSWindowCollectionBehaviorCanJoinAllSpaces
+                | NSWindowCollectionBehavior::NSWindowCollectionBehaviorStationary
+                | NSWindowCollectionBehavior::NSWindowCollectionBehaviorIgnoresCycle,
+        );
+        ns_window.setHasShadow_(false);
+        ns_window.setHidesOnDeactivate_(false);
+
+        // Position window top-center exactly
+        let screen_cls = class!(NSScreen);
+        let screen: id = msg_send![screen_cls, mainScreen];
+        let frame: NSRect = msg_send![screen, frame];
+        let win_size = ns_window.frame().size;
+        let x = frame.size.width / 2.0 - win_size.width / 2.0;
+        let y = frame.size.height;
+        let origin = NSPoint::new(x, y);
+        let () = msg_send![ns_window, setFrameTopLeftPoint: origin];
+
+        // Ensure transparent background so CSS clip-path corners show through
+        let color_cls = class!(NSColor);
+        let clear: id = msg_send![color_cls, clearColor];
+        let () = msg_send![ns_window, setBackgroundColor: clear];
+        let () = msg_send![ns_window, setOpaque: false];
+    }
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn start_hover_tracker(window: tauri::WebviewWindow) {
+    thread::spawn(move || {
+        let mut was_inside = false;
+        loop {
+            thread::sleep(Duration::from_millis(80));
+            if let Ok(raw) = window.ns_window() {
+                let ns_window: id = raw as id;
+                let frame: NSRect = ns_window.frame();
+                let mouse: NSPoint = {
+                    let ev_cls = class!(NSEvent);
+                    let pt: NSPoint = msg_send![ev_cls, mouseLocation];
+                    pt
+                };
+                let inside =
+                    mouse.x >= frame.origin.x
+                        && mouse.x <= frame.origin.x + frame.size.width
+                        && mouse.y >= frame.origin.y
+                        && mouse.y <= frame.origin.y + frame.size.height;
+                if inside != was_inside {
+                    was_inside = inside;
+                    let _ = window.emit("pebble-hover", inside);
+                }
+            }
+        }
+    });
+}
+
 fn main() {
     let instances = Arc::new(Mutex::new(HashMap::new()));
 
@@ -845,19 +888,34 @@ fn main() {
             instances: instances.clone(),
         })
         .setup(move |app| {
-            if let Some(window) = app.handle().get_webview_window("main") {
-                if let Ok(Some(monitor)) = window.current_monitor() {
-                    let size = monitor.size();
-                    let scale = monitor.scale_factor();
-                    let logical_width = size.width as f64 / scale;
-                    let w = 300.0;
-                    let x = (logical_width - w) / 2.0;
-                    let _ = window.set_position(tauri::Position::Logical(
-                        tauri::LogicalPosition { x, y: 0.0 }
-                    ));
+            #[cfg(target_os = "macos")]
+            {
+                if let Some(window) = app.handle().get_webview_window("main") {
                     let _ = window.set_size(tauri::Size::Logical(
-                        tauri::LogicalSize { width: w, height: 52.0 }
+                        tauri::LogicalSize { width: 324.0, height: 50.0 }
                     ));
+                    unsafe {
+                        setup_notch_overlay(&window);
+                        start_hover_tracker(window.clone());
+                    }
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                if let Some(window) = app.handle().get_webview_window("main") {
+                    if let Ok(Some(monitor)) = window.current_monitor() {
+                        let size = monitor.size();
+                        let scale = monitor.scale_factor();
+                        let logical_width = size.width as f64 / scale;
+                        let w = 300.0;
+                        let x = (logical_width - w) / 2.0;
+                        let _ = window.set_position(tauri::Position::Logical(
+                            tauri::LogicalPosition { x, y: 0.0 }
+                        ));
+                        let _ = window.set_size(tauri::Size::Logical(
+                            tauri::LogicalSize { width: w, height: 52.0 }
+                        ));
+                    }
                 }
             }
             start_state_monitor(instances.clone(), app.handle().clone());

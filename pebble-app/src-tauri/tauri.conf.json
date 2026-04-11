@@ -9,12 +9,14 @@
     "beforeBuildCommand": "npm run build"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "label": "main",
         "title": "Pebble",
-        "width": 300,
-        "height": 52,
+        "width": 324,
+        "height": 50,
+        "acceptFirstMouse": true,
         "resizable": false,
         "maximizable": false,
         "minimizable": false,
@@ -22,9 +24,8 @@
         "alwaysOnTop": true,
         "decorations": false,
         "shadow": false,
-        "transparent": false,
+        "transparent": true,
         "skipTaskbar": true,
-        "backgroundColor": "#000000",
         "visible": true,
         "focus": false,
         "center": false
