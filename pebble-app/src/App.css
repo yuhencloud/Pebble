@@ -24,6 +24,8 @@ body,
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
     "Helvetica Neue", Arial, sans-serif;
   background: transparent;
+  overflow: hidden;
+  overscroll-behavior: none;
 }
 
 .panel {
@@ -35,6 +37,7 @@ body,
   overflow: hidden;
   position: relative;
   background: #000000;
+  -webkit-app-region: no-drag;
 }
 
 .compact-header {
@@ -319,7 +322,7 @@ body,
   overflow: hidden;
   opacity: 0;
   transform: translateY(-8px);
-  transition: opacity 0.22s ease, transform 0.22s ease;
+  transition: opacity 0.4s ease-in-out, transform 0.4s ease-in-out;
   pointer-events: none;
   background: var(--bg);
 }
@@ -333,10 +336,12 @@ body,
 .instances {
   flex: 1;
   overflow-y: auto;
+  overscroll-behavior: none;
   display: flex;
   flex-direction: column;
   gap: 8px;
   padding: 0 12px 10px;
+  -webkit-app-region: no-drag;
 }
 
 .empty {
@@ -382,17 +387,86 @@ body,
   border-left-color: var(--waiting);
 }
 
+.instance--completed {
+  border-left-color: var(--completed);
+}
+
 .instance--needs_permission {
   border-left-color: var(--needs-permission);
   background: rgba(244, 63, 94, 0.1);
   border-color: rgba(244, 63, 94, 0.25);
 }
 
-.instance-header {
+.instance-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-bottom: 3px;
+  gap: 10px;
+}
+
+.instance-left {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+}
+
+.pixel-face {
+  display: block;
+}
+
+.pixel-face--waiting {
+  color: var(--waiting);
+}
+
+.pixel-face--executing {
+  color: var(--executing);
+}
+
+.pixel-face--completed {
+  color: var(--completed);
+}
+
+.pixel-face--needs_permission {
+  color: var(--needs-permission);
+}
+
+.instance-center {
+  flex: 1;
+  min-width: 0;
+}
+
+.instance-preview {
+  font-size: 11px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.35;
+}
+
+.preview-placeholder {
+  color: var(--muted);
+  opacity: 0.6;
+}
+
+.preview-empty {
+  color: var(--muted);
+  opacity: 0.5;
+  font-style: italic;
+}
+
+.instance-right {
+  flex-shrink: 0;
+}
+
+.instance-badge {
+  font-size: 9px;
+  font-weight: 500;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.08);
+  padding: 2px 6px;
+  border-radius: 99px;
 }
 
 .status-dot {
@@ -418,36 +492,6 @@ body,
 .status-dot--needs_permission {
   background: var(--needs-permission);
   box-shadow: 0 0 5px var(--needs-permission);
-}
-
-.instance-status {
-  font-size: 10px;
-  font-weight: 500;
-  color: var(--text);
-  text-transform: capitalize;
-  min-width: 52px;
-}
-
-.instance-pid {
-  font-size: 10px;
-  font-weight: 500;
-  color: var(--muted);
-  margin-left: auto;
-}
-
-.instance-dir {
-  font-size: 10px;
-  color: var(--muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.instance-term {
-  font-size: 9px;
-  color: var(--muted);
-  opacity: 0.7;
-  margin-top: 2px;
 }
 
 .permission-card {

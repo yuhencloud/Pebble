@@ -22,7 +22,7 @@ use cocoa::appkit::{NSWindow, NSWindowCollectionBehavior};
 #[cfg(target_os = "macos")]
 use cocoa::base::id;
 #[cfg(target_os = "macos")]
-use cocoa::foundation::{NSPoint, NSRect};
+use cocoa::foundation::{NSPoint, NSRect, NSSize};
 
 const HOOK_PORT: u16 = 9876;
 const EXECUTING_TIMEOUT_SECS: u64 = 30;
@@ -46,9 +46,11 @@ struct Instance {
     last_activity: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pending_permission: Option<PendingPermission>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_hook_event: Option<HookEvent>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 struct HookEvent {
     event: String,
     cwd: String,
@@ -148,6 +150,119 @@ fn respond_permission(
     Ok(())
 }
 
+#[tauri::command]
+fn resize_window_centered(
+    width: f64,
+    height: f64,
+    animate: bool,
+    window: tauri::Window,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        unsafe {
+            if let Ok(raw) = window.ns_window() {
+                let ns_window: id = raw as id;
+                let screen_cls = class!(NSScreen);
+                let screen: id = msg_send![screen_cls, mainScreen];
+                let frame: NSRect = msg_send![screen, frame];
+                let x = frame.size.width / 2.0 - width / 2.0;
+                let y = frame.size.height - height;
+                let origin = NSPoint::new(x, y);
+                let new_frame = NSRect::new(origin, NSSize::new(width, height));
+                if animate {
+                    let () = msg_send![ns_window, setFrame:new_frame display:true animate:true];
+                } else {
+                    let () = msg_send![ns_window, setFrame:new_frame display:true];
+                }
+                return Ok(());
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        window
+            .set_size(tauri::Size::Logical(tauri::LogicalSize { width, height }))
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn get_instance_preview(instance_id: String, state: State<'_, AppState>) -> Result<String, String> {
+    let map = state.instances.lock().unwrap();
+    let instance = map
+        .values()
+        .find(|i| i.id == instance_id)
+        .cloned()
+        .ok_or("Instance not found")?;
+
+    // Primary: use hook event if available
+    if let Some(ref hook) = instance.last_hook_event {
+        let preview = format_hook_preview(hook);
+        if !preview.is_empty() {
+            return Ok(preview);
+        }
+    }
+
+    // Fallback: read from iTerm2 if applicable
+    if instance.terminal_app == "iTerm2" {
+        if let Some(tty) = get_process_tty(instance.pid) {
+            let lines = read_iterm2_last_lines(&tty, 3);
+            let filtered: Vec<String> = lines
+                .into_iter()
+                .map(|s| s.trim().to_string())
+                .filter(|s| {
+                    !s.is_empty()
+                        && !s.starts_with('$')
+                        && !s.starts_with('#')
+                        && !s.starts_with('>')
+                        && !s.starts_with('%')
+                        && !s.starts_with("$")
+                        && !s.starts_with("❯")
+                        && !s.starts_with("●")
+                })
+                .collect();
+            if let Some(last) = filtered.last() {
+                return Ok(last.clone());
+            }
+        }
+    }
+
+    Ok("No recent activity".to_string())
+}
+
+fn format_hook_preview(hook: &HookEvent) -> String {
+    match hook.event.as_str() {
+        "UserPromptSubmit" => {
+            if let Some(ref input) = hook.tool_input {
+                let text = input.to_string();
+                let truncated = if text.len() > 80 {
+                    format!("{}...", &text[..80])
+                } else {
+                    text
+                };
+                format!("You: {}", truncated)
+            } else {
+                "You: ...".to_string()
+            }
+        }
+        "PreToolUse" => {
+            let tool = hook.tool_name.as_deref().unwrap_or("Tool");
+            format!("Using {}", tool)
+        }
+        "PostToolUse" => {
+            let tool = hook.tool_name.as_deref().unwrap_or("Tool");
+            format!("{} completed", tool)
+        }
+        "PostToolUseFailure" => {
+            let tool = hook.tool_name.as_deref().unwrap_or("Tool");
+            format!("{} failed", tool)
+        }
+        "Stop" => "Stopped".to_string(),
+        _ => "".to_string(),
+    }
+}
+
 fn get_process_tty(pid: u32) -> Option<String> {
     if pid == 0 {
         return None;
@@ -183,6 +298,7 @@ fn activate_iterm2_session(tty: &str) -> Result<(), Box<dyn std::error::Error>> 
     let script = format!(
         r#"
         tell application "iTerm2"
+            activate
             repeat with aWindow in windows
                 repeat with aTab in tabs of aWindow
                     repeat with aSession in sessions of aTab
@@ -201,7 +317,6 @@ fn activate_iterm2_session(tty: &str) -> Result<(), Box<dyn std::error::Error>> 
                     end repeat
                 end repeat
             end repeat
-            activate
         end tell
     "#,
         tty
@@ -452,6 +567,7 @@ fn discover_instances() -> HashMap<String, Instance> {
                     terminal_app: terminal,
                     last_activity: 0,
                     pending_permission: None,
+                    last_hook_event: None,
                 },
             );
         }
@@ -593,6 +709,7 @@ fn update_instance_from_hook(
         };
         instance.status = new_status.to_string();
         instance.last_activity = now_secs;
+        instance.last_hook_event = Some(event.clone());
 
         if is_permission_event {
             let tool_name = event.tool_name.clone().unwrap_or_else(|| "Tool".to_string());
@@ -641,6 +758,7 @@ fn update_instance_from_hook(
                 terminal_app: "Unknown".to_string(),
                 last_activity: now_secs,
                 pending_permission: None,
+                last_hook_event: Some(event.clone()),
             },
         );
     }
@@ -671,6 +789,7 @@ fn start_state_monitor(
                     merged.status = existing.status.clone();
                     merged.last_activity = existing.last_activity;
                     merged.pending_permission = existing.pending_permission.clone();
+                    merged.last_hook_event = existing.last_hook_event.clone();
                 }
                 new_map.insert(id.clone(), merged);
                 notified_map.remove(&id);
@@ -827,6 +946,8 @@ unsafe fn setup_notch_overlay(window: &tauri::WebviewWindow) {
         );
         ns_window.setHasShadow_(false);
         ns_window.setHidesOnDeactivate_(false);
+        ns_window.setMovable_(false);
+        ns_window.setMovableByWindowBackground_(false);
 
         // Position window top-center exactly
         let screen_cls = class!(NSScreen);
@@ -891,6 +1012,7 @@ fn main() {
             #[cfg(target_os = "macos")]
             {
                 if let Some(window) = app.handle().get_webview_window("main") {
+                    let _ = window.set_resizable(false);
                     let _ = window.set_size(tauri::Size::Logical(
                         tauri::LogicalSize { width: 324.0, height: 50.0 }
                     ));
@@ -921,7 +1043,7 @@ fn main() {
             start_state_monitor(instances.clone(), app.handle().clone());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_instances, jump_to_terminal, respond_permission])
+        .invoke_handler(tauri::generate_handler![get_instances, jump_to_terminal, respond_permission, get_instance_preview, resize_window_centered])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
