@@ -144,18 +144,27 @@ function App() {
     >
       <div className="compact-header">
         <div className="wing wing--left">
-          <div className={`pet ${permissionCount > 0 ? "pet--alert" : ""}`}>
-            {permissionCount > 0 ? (
-              <div className="pet-body">
-                <span className="pet-mark">?</span>
-              </div>
-            ) : (
-              <div className="pet-body">
-                <div className="pet-eye pet-eye--left" />
-                <div className="pet-eye pet-eye--right" />
-              </div>
-            )}
-          </div>
+          {
+            (() => {
+              let petMod = "";
+              if (permissionCount > 0) petMod = "pet--alert";
+              else if (executingCount > 0) petMod = "pet--executing";
+              else if (realInstances.some((i) => i.status === "waiting")) petMod = "pet--waiting";
+              else if (realInstances.some((i) => i.status === "completed")) petMod = "pet--completed";
+              return (
+                <div className={`pet ${petMod}`}>
+                  <div className="pet-body">
+                    <div className="pet-face">
+                      <div className="pet-eye pet-eye--left" />
+                      <div className="pet-eye pet-eye--right" />
+                    </div>
+                    <div className="pet-blush pet-blush--left" />
+                    <div className="pet-blush pet-blush--right" />
+                  </div>
+                </div>
+              );
+            })()
+          }
         </div>
         <div className="wing wing--center">
           <span className="brand-text">Pebble</span>

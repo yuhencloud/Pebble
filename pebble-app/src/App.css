@@ -83,77 +83,184 @@ body,
 }
 
 .pet {
-  width: 24px;
+  width: 28px;
   height: 24px;
   display: flex;
   align-items: center;
   justify-content: center;
-}
-
-.pet-body {
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: radial-gradient(120% 120% at 30% 30%, #8b5cf6, #6366f1 60%, #4f46e5 100%);
   position: relative;
-  animation: pet-breathe 2.2s ease-in-out infinite, pet-sway 3s ease-in-out infinite alternate;
-  box-shadow: 0 0 8px rgba(99, 102, 241, 0.5);
 }
 
+/* Tilted pebble body */
+.pet-body {
+  width: 20px;
+  height: 14px;
+  border-radius: 50% / 45%;
+  background: radial-gradient(130% 130% at 35% 35%, #f4f4ff 0%, #e8e8ff 50%, #d4d4f7 100%);
+  position: relative;
+  transform: rotate(-12deg);
+  animation: pet-bounce 2.2s ease-in-out infinite;
+  box-shadow:
+    inset -1px -1px 2px rgba(0,0,0,0.08),
+    0 1px 2px rgba(99,102,241,0.25);
+}
+
+/* Speed lines behind the pebble */
+.pet-body::before,
+.pet-body::after {
+  content: "";
+  position: absolute;
+  background: rgba(255,255,255,0.35);
+  border-radius: 2px;
+}
+.pet-body::before {
+  width: 6px;
+  height: 2px;
+  left: -7px;
+  top: 4px;
+  transform: rotate(-10deg);
+}
+.pet-body::after {
+  width: 4px;
+  height: 2px;
+  left: -5px;
+  top: 9px;
+  transform: rotate(-4deg);
+}
+
+/* Eyes container */
+.pet-face {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  transform: rotate(-12deg);
+}
+
+/* Common eye */
 .pet-eye {
   position: absolute;
-  top: 5px;
-  width: 2.5px;
-  height: 2.5px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.95);
-  animation: pet-blink 2.8s infinite;
+  background: rgba(50,45,120,0.95);
 }
 
-.pet-eye--left {
-  left: 4px;
-}
-
+/* Right big eye */
 .pet-eye--right {
+  width: 4px;
+  height: 5px;
   right: 4px;
+  top: 4px;
 }
-
-.pet-mark {
+.pet-eye--right::after {
+  content: "";
   position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  font-size: 8px;
-  font-weight: 700;
-  color: rgba(255, 255, 255, 0.95);
-  line-height: 1;
+  width: 1.5px;
+  height: 1.5px;
+  background: rgba(255,255,255,0.9);
+  border-radius: 50%;
+  top: 0.8px;
+  right: 0.6px;
 }
 
-@keyframes pet-breathe {
-  0%, 100% {
-    transform: scale(1);
-  }
-  50% {
-    transform: scale(1.08);
-  }
+/* Left wink eye */
+.pet-eye--left {
+  width: 4px;
+  height: 3px;
+  left: 4px;
+  top: 5px;
+  background: transparent;
+  border-bottom: 1.5px solid rgba(50,45,120,0.95);
+  border-radius: 0 0 50% 50% / 0 0 100% 100%;
 }
 
-@keyframes pet-sway {
-  0% {
-    transform: rotate(-6deg);
-  }
-  100% {
-    transform: rotate(6deg);
-  }
+/* Blush dots */
+.pet-blush {
+  position: absolute;
+  width: 2.5px;
+  height: 1.5px;
+  border-radius: 50%;
+  background: rgba(255,150,180,0.35);
+  top: 9px;
+}
+.pet-blush--left { left: 2px; }
+.pet-blush--right { right: 2px; }
+
+@keyframes pet-bounce {
+  0%, 100% { transform: rotate(-12deg) translateY(0); }
+  50% { transform: rotate(-12deg) translateY(-1px); }
 }
 
-@keyframes pet-blink {
-  0%, 46%, 54%, 100% {
-    transform: scaleY(1);
-  }
-  50% {
-    transform: scaleY(0.2);
-  }
+/* Alert variant: shocked eyes */
+.pet--alert .pet-body {
+  background: radial-gradient(130% 130% at 35% 35%, #fff0f5 0%, #ffe4ec 50%, #ffd0e0 100%);
+  box-shadow:
+    inset -1px -1px 2px rgba(0,0,0,0.06),
+    0 0 0 1.5px rgba(244,63,94,0.35),
+    0 1px 3px rgba(244,63,94,0.25);
+  animation: pet-shake 0.35s ease-in-out infinite;
+}
+.pet--alert .pet-eye--left,
+.pet--alert .pet-eye--right {
+  width: 3.5px;
+  height: 4.5px;
+  background: rgba(50,45,120,0.95);
+  border-bottom: none;
+  border-radius: 50%;
+  top: 4px;
+}
+.pet--alert .pet-eye--left { left: 3.5px; }
+.pet--alert .pet-eye--right { right: 3.5px; }
+.pet--alert .pet-eye--left::after,
+.pet--alert .pet-eye--right::after {
+  content: "";
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  background: rgba(255,255,255,0.85);
+  border-radius: 50%;
+  top: 1px;
+  right: 0.8px;
+}
+
+@keyframes pet-shake {
+  0%, 100% { transform: rotate(-12deg) translateX(0); }
+  25% { transform: rotate(-14deg) translateX(-0.5px); }
+  75% { transform: rotate(-10deg) translateX(0.5px); }
+}
+
+/* Executing variant: energetic excited eyes */
+.pet--executing .pet-body {
+  background: radial-gradient(130% 130% at 35% 35%, #f0fdf4 0%, #dcfce7 50%, #bbf7d0 100%);
+  box-shadow:
+    inset -1px -1px 2px rgba(0,0,0,0.05),
+    0 0 0 1px rgba(16,185,129,0.35),
+    0 1px 2px rgba(16,185,129,0.2);
+}
+.pet--executing .pet-eye--right::after {
+  width: 2px;
+  height: 2px;
+}
+
+/* Waiting variant: calm sleepy smile */
+.pet--waiting .pet-eye {
+  background: transparent;
+  border-bottom: 1.5px solid rgba(50,45,120,0.8);
+  border-radius: 0 0 50% 50% / 0 0 100% 100%;
+  width: 3.5px;
+  height: 2px;
+  top: 5px;
+}
+.pet--waiting .pet-eye--left::after,
+.pet--waiting .pet-eye--right::after { display: none; }
+
+/* Completed variant: satisfied smile */
+.pet--completed .pet-body {
+  background: radial-gradient(130% 130% at 35% 35%, #eff6ff 0%, #dbeafe 50%, #bfdbfe 100%);
+  box-shadow:
+    inset -1px -1px 2px rgba(0,0,0,0.05),
+    0 0 0 1px rgba(59,130,246,0.3),
+    0 1px 2px rgba(59,130,246,0.2);
 }
 
 .stats {
