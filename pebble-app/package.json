@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:bridge": "node src-tauri/scripts/build-bridge.cjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },

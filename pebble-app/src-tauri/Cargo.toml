@@ -7,6 +7,7 @@ license = "MIT"
 repository = ""
 edition = "2021"
 rust-version = "1.70"
+default-run = "pebble"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -22,10 +23,16 @@ tiny_http = "0.12"
 dirs = "6.0"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 parking_lot = "0.12"
+sysinfo = "0.30.13"
+ureq = "2.11.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "0.2"
 cocoa = "0.26"
+
+[[bin]]
+name = "pebble-bridge"
+path = "src/bin/pebble-bridge.rs"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

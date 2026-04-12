@@ -1,96 +1,56 @@
 use std::fs;
 use std::path::PathBuf;
 
-pub fn ensure_hook_script() -> PathBuf {
+fn bridge_exe_name() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "pebble-bridge.exe"
+    } else {
+        "pebble-bridge"
+    }
+}
+
+/// Locates the pebble-bridge executable bundled with the app.
+/// In dev: target/{debug,release}/pebble-bridge
+/// In production bundle: next to the main Pebble binary.
+fn bundled_bridge_path() -> Option<PathBuf> {
+    let exe_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    let candidate = exe_dir.join(bridge_exe_name());
+    if candidate.exists() {
+        Some(candidate)
+    } else {
+        None
+    }
+}
+
+/// Ensures `~/.pebble/bin/pebble-bridge` exists and is up-to-date.
+pub fn ensure_bridge_binary() -> PathBuf {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-    let hooks_dir = home.join(".claude").join("hooks");
-    let script_path = hooks_dir.join("pebble-bridge.mjs");
+    let bin_dir = home.join(".pebble").join("bin");
+    let target_path = bin_dir.join(bridge_exe_name());
 
-    let script_content = r#"#!/usr/bin/env node
-import http from "http";
-import { execSync } from "child_process";
+    let source_path = match bundled_bridge_path() {
+        Some(p) => p,
+        None => return target_path,
+    };
 
-const eventType = process.argv[2] || "unknown";
-const cwd = process.cwd();
-const timestamp = Date.now();
-
-function findClaudePid(startPid) {
-  let pid = startPid;
-  while (pid > 1) {
-    try {
-      const comm = execSync(`ps -p ${pid} -o comm=`, { encoding: "utf8" }).trim();
-      if (comm === "claude" || comm === "claude-code") {
-        return pid;
-      }
-      const ppid = parseInt(execSync(`ps -p ${pid} -o ppid=`, { encoding: "utf8" }).trim(), 10);
-      if (ppid === pid || ppid <= 0) break;
-      pid = ppid;
-    } catch (e) {
-      break;
-    }
-  }
-  return null;
-}
-
-const senderPid = findClaudePid(process.ppid);
-
-let stdinData = "";
-process.stdin.setEncoding("utf8");
-process.stdin.on("data", chunk => { stdinData += chunk; });
-process.stdin.on("end", () => {
-  let body = { event: eventType, cwd, timestamp };
-  if (senderPid) {
-    body.sender_pid = senderPid;
-  }
-  if (stdinData.trim()) {
-    try {
-      const parsed = JSON.parse(stdinData);
-      body = { ...parsed, ...body };
-    } catch (e) {
-      body.stdin = stdinData;
-    }
-  }
-  const payload = JSON.stringify(body);
-  const req = http.request({
-    hostname: "127.0.0.1",
-    port: 9876,
-    path: "/hook",
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Content-Length": Buffer.byteLength(payload),
-    },
-    timeout: eventType === "PermissionRequest" ? 300000 : 500,
-  }, (res) => {
-    let responseData = "";
-    res.setEncoding("utf8");
-    res.on("data", chunk => { responseData += chunk; });
-    res.on("end", () => {
-      if (responseData.trim()) {
-        console.log(responseData);
-      }
-      process.exit(0);
-    });
-  });
-  req.on("error", () => process.exit(0));
-  req.on("timeout", () => { req.destroy(); process.exit(0); });
-  req.write(payload);
-  req.end();
-});
-"#;
-
-    if let Ok(existing) = fs::read_to_string(&script_path) {
-        if existing.trim() == script_content.trim() {
-            return script_path;
+    let should_copy = match (fs::metadata(&target_path), fs::metadata(&source_path)) {
+        (Ok(t), Ok(s)) => {
+            t.len() != s.len()
+                || t.modified().ok().zip(s.modified().ok()).map(|(tm, sm)| tm != sm).unwrap_or(true)
         }
+        (Err(_), _) => true,
+        _ => false,
+    };
+
+    if should_copy {
+        let _ = fs::create_dir_all(&bin_dir);
+        let _ = fs::copy(&source_path, &target_path);
     }
 
-    let _ = fs::create_dir_all(&hooks_dir);
-    let _ = fs::write(&script_path, script_content);
-    script_path
+    target_path
 }
 
-pub fn ensure_claude_hooks_config(script_path: &std::path::Path) {
+pub fn ensure_claude_hooks_config(bridge_path: &std::path::Path) {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
     let settings_path = home.join(".claude").join("settings.json");
 
@@ -105,15 +65,15 @@ pub fn ensure_claude_hooks_config(script_path: &std::path::Path) {
         settings = serde_json::json!({});
     }
 
-    let command_str = format!("node {}", script_path.to_string_lossy());
+    let cmd = bridge_path.to_string_lossy().to_string();
 
     let pebble_hooks = serde_json::json!({
-        "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": format!("{} UserPromptSubmit", command_str) }] }],
-        "PreToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": format!("{} PreToolUse", command_str) }] }],
-        "PostToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": format!("{} PostToolUse", command_str) }] }],
-        "PostToolUseFailure": [{ "matcher": "*", "hooks": [{ "type": "command", "command": format!("{} PostToolUseFailure", command_str) }] }],
-        "PermissionRequest": [{ "matcher": "*", "hooks": [{ "type": "command", "command": format!("{} PermissionRequest", command_str), "timeout": 300 }] }],
-        "Stop": [{ "hooks": [{ "type": "command", "command": format!("{} Stop", command_str) }] }]
+        "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": format!("{} UserPromptSubmit", cmd) }] }],
+        "PreToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": format!("{} PreToolUse", cmd) }] }],
+        "PostToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": format!("{} PostToolUse", cmd) }] }],
+        "PostToolUseFailure": [{ "matcher": "*", "hooks": [{ "type": "command", "command": format!("{} PostToolUseFailure", cmd) }] }],
+        "PermissionRequest": [{ "matcher": "*", "hooks": [{ "type": "command", "command": format!("{} PermissionRequest", cmd), "timeout": 300 }] }],
+        "Stop": [{ "hooks": [{ "type": "command", "command": format!("{} Stop", cmd) }] }]
     });
 
     let existing_hooks = settings.get("hooks").cloned().unwrap_or(serde_json::json!({}));
@@ -131,10 +91,9 @@ pub fn ensure_claude_hooks_config(script_path: &std::path::Path) {
         }
     }
 
-    // Remove old Pebble statusLine if it exists (migration from v0.1.x)
     if let Some(sl) = settings.get("statusLine") {
         let is_pebble = match sl {
-            serde_json::Value::String(cmd) => cmd.contains("pebble-bridge-statusline.sh"),
+            serde_json::Value::String(s) => s.contains("pebble-bridge-statusline.sh"),
             serde_json::Value::Object(obj) => obj.get("command")
                 .and_then(|c| c.as_str())
                 .map(|s| s.contains("pebble-bridge-statusline.sh"))
@@ -152,4 +111,3 @@ pub fn ensure_claude_hooks_config(script_path: &std::path::Path) {
         let _ = fs::write(&settings_path, serde_json::to_string_pretty(&settings).unwrap());
     }
 }
-

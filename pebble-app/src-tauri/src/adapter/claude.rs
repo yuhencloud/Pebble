@@ -19,8 +19,8 @@ impl Adapter for ClaudeAdapter {
     }
 
     fn auto_configure(&self) -> Result<(), String> {
-        let script_path = crate::hook::bridge::ensure_hook_script();
-        crate::hook::bridge::ensure_claude_hooks_config(&script_path);
+        let bridge_path = crate::hook::bridge::ensure_bridge_binary();
+        crate::hook::bridge::ensure_claude_hooks_config(&bridge_path);
         Ok(())
     }
 
