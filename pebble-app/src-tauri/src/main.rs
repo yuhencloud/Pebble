@@ -233,7 +233,7 @@ fn start_state_monitor(
                     conversation_log: Vec::new(),
                     session_start: None,
                     transcript_path: None,
-                    session_name: None,
+                    session_name: raw.session_name.clone(),
                 };
                 if let Some(existing) = map.get(&id) {
                     instance.status = existing.status.clone();

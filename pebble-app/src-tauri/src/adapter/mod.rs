@@ -11,6 +11,7 @@ pub struct RawInstance {
     pub pid: u32,
     pub working_directory: String,
     pub terminal_app: String,
+    pub session_name: Option<String>,
 }
 
 /// Hook payload normalized for adapter consumption

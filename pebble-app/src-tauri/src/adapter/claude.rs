@@ -41,6 +41,7 @@ impl Adapter for ClaudeAdapter {
             let cwd = session.as_ref().map(|s| s.cwd.clone())
                 .or_else(|| platform::cwd::get_process_cwd(proc.pid))
                 .unwrap_or_else(|| "Unknown".to_string());
+            let session_name = session.as_ref().and_then(|s| s.name.clone());
             let terminal = platform::terminal::detect_terminal_app(proc.pid, &ps_output);
             let id = format!("cc-{}", proc.pid);
 
@@ -49,6 +50,7 @@ impl Adapter for ClaudeAdapter {
                 pid: proc.pid,
                 working_directory: cwd,
                 terminal_app: terminal,
+                session_name,
             });
         }
 
