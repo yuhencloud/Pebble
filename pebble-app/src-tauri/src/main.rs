@@ -1,17 +1,13 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use serde::{Deserialize, Serialize};
 
 mod types;
 mod platform;
 mod transcript;
-use types::{AppState, HookEvent, IncomingHookPayload, Instance, PendingPermission, SubagentInfo};
+mod hook;
+use types::{AppState, HookEvent, Instance, PendingPermission, SubagentInfo};
 use std::collections::HashMap;
-use std::fs;
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 use parking_lot::Mutex;
@@ -30,7 +26,6 @@ use cocoa::base::id;
 #[cfg(target_os = "macos")]
 use cocoa::foundation::{NSPoint, NSRect, NSSize};
 
-const HOOK_PORT: u16 = 9876;
 const EXECUTING_TIMEOUT_SECS: u64 = 30;
 
 fn is_related_cwd(a: &str, b: &str) -> bool {
@@ -480,93 +475,6 @@ fn extract_context_percent_from_payload(
     })
 }
 
-fn handle_http_request(mut stream: TcpStream, instances: Arc<Mutex<HashMap<String, Instance>>>) {
-    let mut buf = [0u8; 65536];
-    let mut n = 0usize;
-    loop {
-        match stream.read(&mut buf[n..]) {
-            Ok(0) => break,
-            Ok(bytes_read) => {
-                n += bytes_read;
-                if n == buf.len() {
-                    // Buffer full; respond with 413 and abort
-                    let _ = stream.write_all(b"HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\n\r\n");
-                    return;
-                }
-            }
-            Err(_) => break,
-        }
-    }
-    let req = String::from_utf8_lossy(&buf[..n]);
-    let first_line = req.lines().next().unwrap_or("");
-
-        if first_line.starts_with("GET /instances") {
-            let map = instances.lock();
-            let mut list: Vec<Instance> = map.values().cloned().collect();
-            drop(map);
-            list.sort_by(|a, b| a.working_directory.cmp(&b.working_directory));
-            let body = serde_json::to_string(&list).unwrap_or_else(|_| "[]".to_string());
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                body.len(),
-                body
-            );
-            let _ = stream.write_all(response.as_bytes());
-        } else if first_line.starts_with("POST /hook") {
-            if let Some(body_start) = req.find("\r\n\r\n") {
-                let body = &req[body_start + 4..];
-                if let Ok(payload) = serde_json::from_str::<IncomingHookPayload>(body) {
-                    let model = extract_model_string(&payload.raw_model)
-                        .or_else(|| {
-                            payload.context_window.as_ref().and_then(|cw| {
-                                cw.as_object()
-                                    .and_then(|o| o.get("model"))
-                                    .and_then(|m| extract_model_string(&Some(m.clone())))
-                            })
-                        });
-                    let context_percent = extract_context_percent_from_payload(
-                        &payload.context_window,
-                        payload.context_percent,
-                    );
-                    let event = HookEvent {
-                        event: payload.event,
-                        cwd: payload.cwd,
-                        timestamp: payload.timestamp,
-                        tool_name: payload.tool_name,
-                        tool_input: payload.tool_input,
-                        permission_mode: payload.permission_mode,
-                        tool_use_id: payload.tool_use_id,
-                        model,
-                        context_percent,
-                        session_name: payload.session_name,
-                    };
-                    update_instance_from_hook(instances, &event, payload.transcript_path, payload.sender_pid);
-                }
-            }
-            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK");
-        } else {
-            let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
-        }
-}
-
-fn start_hook_server(instances: Arc<Mutex<HashMap<String, Instance>>>) {
-    thread::spawn(move || {
-        let listener = match TcpListener::bind(("127.0.0.1", HOOK_PORT)) {
-            Ok(l) => l,
-            Err(e) => {
-                eprintln!("Failed to bind hook server: {}", e);
-                return;
-            }
-        };
-        for stream in listener.incoming() {
-            if let Ok(stream) = stream {
-                let inst = instances.clone();
-                thread::spawn(move || handle_http_request(stream, inst));
-            }
-        }
-    });
-}
-
 fn update_instance_from_hook(
     instances: Arc<Mutex<HashMap<String, Instance>>>,
     event: &HookEvent,
@@ -853,181 +761,6 @@ fn start_state_monitor(
     });
 }
 
-fn ensure_hook_script() -> PathBuf {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-    let hooks_dir = home.join(".claude").join("hooks");
-    let script_path = hooks_dir.join("pebble-bridge.mjs");
-
-    let script_content = r#"#!/usr/bin/env node
-import http from "http";
-import { execSync } from "child_process";
-
-const eventType = process.argv[2] || "unknown";
-const cwd = process.cwd();
-const timestamp = Date.now();
-
-function findClaudePid(startPid) {
-  let pid = startPid;
-  while (pid > 1) {
-    try {
-      const comm = execSync(`ps -p ${pid} -o comm=`, { encoding: "utf8" }).trim();
-      if (comm === "claude" || comm === "claude-code") {
-        return pid;
-      }
-      const ppid = parseInt(execSync(`ps -p ${pid} -o ppid=`, { encoding: "utf8" }).trim(), 10);
-      if (ppid === pid || ppid <= 0) break;
-      pid = ppid;
-    } catch (e) {
-      break;
-    }
-  }
-  return null;
-}
-
-const senderPid = findClaudePid(process.ppid);
-
-let stdinData = "";
-process.stdin.setEncoding("utf8");
-process.stdin.on("data", chunk => { stdinData += chunk; });
-process.stdin.on("end", () => {
-  let body = { event: eventType, cwd, timestamp };
-  if (senderPid) {
-    body.sender_pid = senderPid;
-  }
-  if (stdinData.trim()) {
-    try {
-      const parsed = JSON.parse(stdinData);
-      body = { ...parsed, ...body };
-    } catch (e) {
-      body.stdin = stdinData;
-    }
-  }
-  const payload = JSON.stringify(body);
-  const req = http.request({
-    hostname: "127.0.0.1",
-    port: 9876,
-    path: "/hook",
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Content-Length": Buffer.byteLength(payload),
-    },
-    timeout: 500,
-  }, () => process.exit(0));
-  req.on("error", () => process.exit(0));
-  req.on("timeout", () => { req.destroy(); process.exit(0); });
-  req.write(payload);
-  req.end();
-});
-"#;
-
-    if let Ok(existing) = fs::read_to_string(&script_path) {
-        if existing.trim() == script_content.trim() {
-            return script_path;
-        }
-    }
-
-    let _ = fs::create_dir_all(&hooks_dir);
-    let _ = fs::write(&script_path, script_content);
-    script_path
-}
-
-fn ensure_statusline_wrapper_script(script_path: &std::path::Path) -> PathBuf {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-    let hooks_dir = home.join(".claude").join("hooks");
-    let wrapper_path = hooks_dir.join("pebble-bridge-statusline.sh");
-
-    let wrapper_content = format!(r#"#!/bin/bash
-data=$(cat)
-{{ echo "$data" | node "{}" StatusLine & }}
-plugin_dir=$(ls -d "${{CLAUDE_CONFIG_DIR:-$HOME/.claude}}"/plugins/cache/claude-hud/claude-hud/*/ 2>/dev/null | awk -F/ '{{ print $(NF-1) "\t" $(0) }}' | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n | tail -1 | cut -f2-)
-bun_path=$(command -v bun || echo "")
-if [ -n "$plugin_dir" ] && [ -n "$bun_path" ] && [ -x "$bun_path" ]; then
-    echo "$data" | exec "$bun_path" --env-file /dev/null "${{plugin_dir}}src/index.ts"
-fi
-exit 0
-"#, script_path.to_string_lossy());
-
-    if let Ok(existing) = fs::read_to_string(&wrapper_path) {
-        if existing.trim() == wrapper_content.trim() {
-            return wrapper_path;
-        }
-    }
-
-    let _ = fs::create_dir_all(&hooks_dir);
-    let _ = fs::write(&wrapper_path, wrapper_content);
-    #[cfg(target_family = "unix")]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(&wrapper_path, std::fs::Permissions::from_mode(0o755));
-    }
-    wrapper_path
-}
-
-fn ensure_claude_hooks_config(script_path: &std::path::Path) {
-    let wrapper_path = ensure_statusline_wrapper_script(script_path);
-    let wrapper_cmd = format!("bash {}", wrapper_path.to_string_lossy());
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-    let settings_path = home.join(".claude").join("settings.json");
-
-    let mut settings = match fs::read_to_string(&settings_path) {
-        Ok(content) => serde_json::from_str::<serde_json::Value>(&content).unwrap_or_else(|_| {
-            serde_json::json!({})
-        }),
-        Err(_) => serde_json::json!({}),
-    };
-
-    if !settings.is_object() {
-        settings = serde_json::json!({});
-    }
-
-    let command_str = format!("node {}", script_path.to_string_lossy());
-
-    let pebble_hooks = serde_json::json!({
-        "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": format!("{} UserPromptSubmit", command_str) }] }],
-        "PreToolUse": [{ "hooks": [{ "type": "command", "command": format!("{} PreToolUse", command_str) }] }],
-        "PostToolUse": [{ "hooks": [{ "type": "command", "command": format!("{} PostToolUse", command_str) }] }],
-        "Stop": [{ "hooks": [{ "type": "command", "command": format!("{} Stop", command_str) }] }]
-    });
-
-    let existing_hooks = settings.get("hooks").cloned().unwrap_or(serde_json::json!({}));
-    let mut existing_hooks = if existing_hooks.is_object() {
-        existing_hooks.as_object().unwrap().clone()
-    } else {
-        serde_json::Map::new()
-    };
-
-    let mut changed = false;
-    for (key, value) in pebble_hooks.as_object().unwrap() {
-        if existing_hooks.get(key) != Some(value) {
-            existing_hooks.insert(key.clone(), value.clone());
-            changed = true;
-        }
-    }
-
-    let existing_statusline = settings.get("statusLine").cloned();
-    let target_statusline = serde_json::json!({
-        "type": "command",
-        "command": wrapper_cmd,
-    });
-
-    let should_update = match &existing_statusline {
-        Some(serde_json::Value::String(cmd)) => !cmd.contains("pebble-bridge-statusline.sh"),
-        Some(serde_json::Value::Object(obj)) => obj.get("command").and_then(|c| c.as_str()).map(|s| !s.contains("pebble-bridge-statusline.sh")).unwrap_or(true),
-        _ => true,
-    };
-
-    if should_update || settings.get("statusLine") != Some(&target_statusline) {
-        settings["statusLine"] = target_statusline;
-        changed = true;
-    }
-
-    if changed {
-        settings["hooks"] = serde_json::Value::Object(existing_hooks);
-        let _ = fs::write(&settings_path, serde_json::to_string_pretty(&settings).unwrap());
-    }
-}
-
 unsafe fn setup_notch_overlay(window: &tauri::WebviewWindow) {
     if let Ok(raw) = window.ns_window() {
         let ns_window: id = raw as id;
@@ -1093,9 +826,37 @@ fn main() {
     let instances = Arc::new(Mutex::new(HashMap::new()));
     let hover_running = Arc::new(std::sync::atomic::AtomicBool::new(true));
 
-    let script_path = ensure_hook_script();
-    ensure_claude_hooks_config(&script_path);
-    start_hook_server(instances.clone());
+    let script_path = hook::bridge::ensure_hook_script();
+    hook::bridge::ensure_claude_hooks_config(&script_path);
+
+    let instances_for_hook = instances.clone();
+    hook::server::start_hook_server(instances.clone(), move |payload| {
+        let model = extract_model_string(&payload.raw_model)
+            .or_else(|| {
+                payload.context_window.as_ref().and_then(|cw| {
+                    cw.as_object()
+                        .and_then(|o| o.get("model"))
+                        .and_then(|m| extract_model_string(&Some(m.clone())))
+                })
+            });
+        let context_percent = extract_context_percent_from_payload(
+            &payload.context_window,
+            payload.context_percent,
+        );
+        let event = HookEvent {
+            event: payload.event.clone(),
+            cwd: payload.cwd.clone(),
+            timestamp: payload.timestamp,
+            tool_name: payload.tool_name.clone(),
+            tool_input: payload.tool_input.clone(),
+            permission_mode: payload.permission_mode.clone(),
+            tool_use_id: payload.tool_use_id.clone(),
+            model,
+            context_percent,
+            session_name: payload.session_name.clone(),
+        };
+        update_instance_from_hook(instances_for_hook.clone(), &event, payload.transcript_path.clone(), payload.sender_pid);
+    });
 
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())

@@ -1,3 +1,4 @@
+pub mod hook;
 pub mod platform;
 pub mod session;
 pub mod transcript;
