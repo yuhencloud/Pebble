@@ -99,5 +99,7 @@ pub struct IncomingHookPayload {
 
 pub struct AppState {
     pub instances: Arc<Mutex<HashMap<String, Instance>>>,
+    pub registry: crate::adapter::AdapterRegistry,
+    pub adapter_states: Arc<Mutex<HashMap<String, crate::adapter::AdapterState>>>,
 }
 

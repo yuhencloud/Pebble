@@ -2,6 +2,7 @@ pub mod claude;
 
 use crate::types::{Instance, SubagentInfo};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 
 #[derive(Debug, Clone)]
@@ -82,7 +83,15 @@ pub trait Adapter: Send + Sync {
 }
 
 pub struct AdapterRegistry {
-    adapters: Vec<Box<dyn Adapter>>,
+    pub adapters: Vec<Arc<dyn Adapter>>,
+}
+
+impl Clone for AdapterRegistry {
+    fn clone(&self) -> Self {
+        Self {
+            adapters: self.adapters.iter().map(|a| Arc::clone(a)).collect(),
+        }
+    }
 }
 
 impl AdapterRegistry {
@@ -90,7 +99,7 @@ impl AdapterRegistry {
         Self { adapters: Vec::new() }
     }
 
-    pub fn register(&mut self, adapter: Box<dyn Adapter>) {
+    pub fn register(&mut self, adapter: Arc<dyn Adapter>) {
         self.adapters.push(adapter);
     }
 
@@ -99,11 +108,11 @@ impl AdapterRegistry {
     }
 
     pub fn discover_all(&self) -> Vec<RawInstance> {
-        self.adapters.iter().flat_map(|a| a.discover_instances()).collect()
+        self.adapters.iter().flat_map(|a: &Arc<dyn Adapter>| a.discover_instances()).collect()
     }
 
     pub fn find_adapter_for_event<'a>(&'a self, _payload: &HookPayload) -> Option<&'a dyn Adapter> {
         // For now, all events are assumed to be from Claude
-        self.adapters.first().map(|a| a.as_ref())
+        self.adapters.first().map(|a: &Arc<dyn Adapter>| a.as_ref())
     }
 }

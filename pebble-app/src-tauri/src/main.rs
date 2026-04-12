@@ -1,14 +1,16 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-
 mod types;
 mod platform;
 mod transcript;
+mod session;
 mod hook;
-use types::{AppState, HookEvent, Instance, PendingPermission, SubagentInfo};
+mod adapter;
+
+use adapter::{Adapter, AdapterRegistry};
+use types::{AppState, Instance};
 use std::collections::HashMap;
-use std::process::Command;
 use std::sync::Arc;
 use parking_lot::Mutex;
 use std::thread;
@@ -58,7 +60,21 @@ fn jump_to_terminal(instance_id: String, state: State<'_, AppState>) -> Result<(
         .find(|i| i.id == instance_id)
         .cloned()
         .ok_or("Instance not found")?;
-    platform::jump::jump_to_terminal(instance.pid, &instance.terminal_app)
+    let adapter = state.registry.find_adapter_for_event(&adapter::HookPayload {
+        event: "discover".to_string(),
+        cwd: instance.working_directory.clone(),
+        timestamp: 0,
+        tool_name: None,
+        tool_input: None,
+        permission_mode: None,
+        tool_use_id: None,
+        model: None,
+        context_percent: None,
+        session_name: None,
+        transcript_path: None,
+        sender_pid: Some(instance.pid),
+    }).ok_or("No adapter found")?;
+    adapter.jump_to_terminal(&instance)
 }
 
 #[tauri::command]
@@ -75,31 +91,22 @@ fn respond_permission(
             .ok_or("Instance not found")?
     };
 
-    let perm = instance
-        .pending_permission
-        .ok_or("No pending permission for this instance")?;
+    let adapter = state.registry.find_adapter_for_event(&adapter::HookPayload {
+        event: "discover".to_string(),
+        cwd: instance.working_directory.clone(),
+        timestamp: 0,
+        tool_name: None,
+        tool_input: None,
+        permission_mode: None,
+        tool_use_id: None,
+        model: None,
+        context_percent: None,
+        session_name: None,
+        transcript_path: None,
+        sender_pid: Some(instance.pid),
+    }).ok_or("No adapter found")?;
 
-    let target_idx = perm
-        .choices
-        .iter()
-        .position(|c| c == &choice)
-        .ok_or("Invalid choice")?;
-    let default_idx = perm
-        .default_choice
-        .as_ref()
-        .and_then(|d| perm.choices.iter().position(|c| c == d))
-        .unwrap_or(0);
-
-    if instance.terminal_app == "iTerm2" {
-        if let Some(tty) = platform::jump::get_process_tty(instance.pid) {
-            inject_permission_response_to_iterm2(&tty, target_idx, default_idx)
-                .map_err(|e| e.to_string())?;
-        } else {
-            return Err("TTY not found".to_string());
-        }
-    } else {
-        return Err("Permission response only supported for iTerm2".to_string());
-    }
+    adapter.respond_permission(&instance, &choice.to_lowercase(), None)?;
 
     let mut map = state.instances.lock();
     if let Some(inst) = map.values_mut().find(|i| i.id == instance_id) {
@@ -158,500 +165,31 @@ fn get_instance_preview(instance_id: String, state: State<'_, AppState>) -> Resu
         .cloned()
         .ok_or("Instance not found")?;
 
-    // Primary: use conversation log if available
-    if !instance.conversation_log.is_empty() {
-        let start = instance.conversation_log.len().saturating_sub(3);
-        let lines = instance.conversation_log[start..].join("\n");
-        return Ok(lines);
-    }
+    let adapter = state.registry.find_adapter_for_event(&adapter::HookPayload {
+        event: "discover".to_string(),
+        cwd: instance.working_directory.clone(),
+        timestamp: 0,
+        tool_name: None,
+        tool_input: None,
+        permission_mode: None,
+        tool_use_id: None,
+        model: None,
+        context_percent: None,
+        session_name: None,
+        transcript_path: None,
+        sender_pid: Some(instance.pid),
+    }).ok_or("No adapter found")?;
 
-    // Fallback: read from iTerm2 if applicable
-    if instance.terminal_app == "iTerm2" {
-        if let Some(tty) = platform::jump::get_process_tty(instance.pid) {
-            let lines = read_iterm2_last_lines(&tty, 8);
-            let filtered: Vec<String> = lines
-                .into_iter()
-                .map(|s| s.trim().to_string())
-                .filter(|s| {
-                    !s.is_empty()
-                        && !s.starts_with('$')
-                        && !s.starts_with('#')
-                        && !s.starts_with('>')
-                        && !s.starts_with('%')
-                        && !s.starts_with("$")
-                        && !s.starts_with("❯")
-                        && !s.starts_with("●")
-                })
-                .collect();
-
-            if filtered.len() >= 2 {
-                let start = filtered.len().saturating_sub(3);
-                return Ok(filtered[start..].join("\n"));
-            } else if let Some(last) = filtered.last() {
-                return Ok(last.clone());
-            }
-        }
-    }
-
-    Ok("No recent activity".to_string())
-}
-
-fn inject_permission_response_to_iterm2(
-    tty: &str,
-    target_idx: usize,
-    default_idx: usize,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut key_lines = Vec::new();
-    if target_idx > default_idx {
-        for _ in 0..(target_idx - default_idx) {
-            key_lines.push(r#"                                write text (ASCII character 27) & "[B" newline NO"#);
-        }
-    } else if target_idx < default_idx {
-        for _ in 0..(default_idx - target_idx) {
-            key_lines.push(r#"                                write text (ASCII character 27) & "[A" newline NO"#);
-        }
-    }
-    key_lines.push(r#"                                write text (ASCII character 13) newline NO"#);
-    let keys_body = key_lines.join("\n");
-
-    let script = format!(
-        r#"
-        tell application "iTerm2"
-            repeat with aWindow in windows
-                repeat with aTab in tabs of aWindow
-                    repeat with aSession in sessions of aTab
-                        if tty of aSession contains "{}" then
-                            tell aSession
-{}
-                            end tell
-                            tell aWindow
-                                select
-                            end tell
-                            tell aTab
-                                select
-                            end tell
-                            tell aSession
-                                select
-                            end tell
-                            return
-                        end if
-                    end repeat
-                end repeat
-            end repeat
-            activate
-        end tell
-    "#,
-        tty, keys_body
-    );
-
-    Command::new("osascript")
-        .arg("-e")
-        .arg(&script)
-        .output()?;
-
-    Ok(())
-}
-
-fn read_iterm2_last_lines(tty: &str, n: usize) -> Vec<String> {
-    let n_lines = n.max(1);
-    let script = format!(
-        r#"
-        tell application "iTerm2"
-            repeat with aWindow in windows
-                repeat with aTab in tabs of aWindow
-                    repeat with aSession in sessions of aTab
-                        if tty of aSession contains "{}" then
-                            set sessionContents to contents of aSession
-                            set allLines to paragraphs of sessionContents
-                            set totalLines to count of allLines
-                            set startLine to totalLines - {}
-                            if startLine < 1 then set startLine to 1
-                            set resultLines to {{}}
-                            repeat with i from startLine to totalLines
-                                set end of resultLines to item i of allLines
-                            end repeat
-                            set AppleScript's text item delimiters to linefeed
-                            return resultLines as string
-                        end if
-                    end repeat
-                end repeat
-            end repeat
-            return ""
-        end tell
-    "#,
-        tty, n_lines
-    );
-
-    match Command::new("osascript").arg("-e").arg(&script).output() {
-        Ok(out) => {
-            let text = String::from_utf8_lossy(&out.stdout);
-            text.lines().map(|s| s.to_string()).collect()
-        }
-        Err(_) => Vec::new(),
-    }
-}
-
-fn parse_permission_choices(lines: &[String]) -> Option<PendingPermission> {
-    let mut prompt_idx = None;
-    for (i, line) in lines.iter().enumerate().rev() {
-        let trimmed = line.trim();
-        if trimmed.ends_with('?') || trimmed.ends_with(':') {
-            if trimmed.len() > 5 {
-                prompt_idx = Some(i);
-                break;
-            }
-        }
-    }
-    let prompt_idx = prompt_idx?;
-
-    let prompt = lines[prompt_idx].trim().to_string();
-    let mut choices: Vec<String> = Vec::new();
-    let mut default_choice: Option<String> = None;
-
-    for line in lines.iter().skip(prompt_idx + 1) {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        let is_selected = trimmed.starts_with("> ")
-            || trimmed.starts_with("❯ ")
-            || trimmed.starts_with("● ")
-            || trimmed.starts_with("* ");
-
-        let clean = if trimmed.starts_with("> ") {
-            &trimmed[2..]
-        } else if trimmed.starts_with("❯ ") {
-            &trimmed["❯ ".len()..]
-        } else if trimmed.starts_with("● ") {
-            &trimmed["● ".len()..]
-        } else if trimmed.starts_with("* ") {
-            &trimmed[2..]
-        } else if trimmed.starts_with("- ") {
-            &trimmed[2..]
-        } else if trimmed.starts_with("○ ") || trimmed.starts_with("◯ ") {
-            &trimmed["○ ".len()..]
-        } else if trimmed.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false)
-            && trimmed.chars().nth(1) == Some('.')
-        {
-            trimmed[2..].trim_start()
-        } else {
-            if choices.is_empty() {
-                continue;
-            } else {
-                break;
-            }
-        };
-
-        let clean = clean.trim().to_string();
-        if !clean.is_empty() {
-            if is_selected && default_choice.is_none() {
-                default_choice = Some(clean.clone());
-            }
-            choices.push(clean);
-        }
-    }
-
-    if choices.len() < 2 {
-        None
-    } else {
-        Some(PendingPermission {
-            tool_name: "Claude".to_string(),
-            tool_use_id: "".to_string(),
-            prompt,
-            choices,
-            default_choice,
-        })
-    }
-}
-
-fn discover_instances() -> HashMap<String, Instance> {
-    let mut map = HashMap::new();
-
-    let all = platform::discovery::list_processes();
-    let claudes = platform::discovery::find_claude_processes();
-
-    let mut claude_pids = std::collections::HashSet::new();
-    for p in &all {
-        let is_claude_main = p.comm == "claude" || p.comm == "claude-code";
-        let is_node_claude = p.comm == "node" && p.args.contains("claude-code");
-        if is_claude_main || is_node_claude {
-            claude_pids.insert(p.pid);
-        }
-    }
-
-    let mut children: HashMap<u32, Vec<(u32, String, String)>> = HashMap::new();
-    for p in &all {
-        if claude_pids.contains(&p.pid) && claude_pids.contains(&p.ppid) && p.pid != p.ppid {
-            children.entry(p.ppid).or_default().push((p.pid, p.comm.clone(), p.args.clone()));
-        }
-    }
-
-    fn collect_subagents(
-        pid: u32,
-        children: &HashMap<u32, Vec<(u32, String, String)>>,
-        depth: usize,
-    ) -> Vec<SubagentInfo> {
-        if depth >= 5 {
-            return Vec::new();
-        }
-        let mut result = Vec::new();
-        if let Some(kids) = children.get(&pid) {
-            for (cid, comm, args) in kids {
-                let name = args.split_whitespace().next().unwrap_or(comm).to_string();
-                result.push(SubagentInfo {
-                    id: format!("cc-{}", cid),
-                    status: "executing".to_string(),
-                    name,
-                });
-                result.extend(collect_subagents(*cid, children, depth + 1));
-            }
-        }
-        result
-    }
-
-    let ps_output = Command::new("ps")
-        .args(&["-eo", "pid,ppid,comm,args"])
-        .output()
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-        .unwrap_or_default();
-
-    for p in claudes {
-        let cwd = platform::cwd::get_process_cwd(p.pid).unwrap_or_else(|| "Unknown".to_string());
-        let terminal = platform::terminal::detect_terminal_app(p.pid, &ps_output);
-        let id = format!("cc-{}", p.pid);
-        let subagents = collect_subagents(p.pid, &children, 0);
-
-        map.insert(
-            id.clone(),
-            Instance {
-                id,
-                pid: p.pid,
-                status: "waiting".to_string(),
-                working_directory: cwd,
-                terminal_app: terminal,
-                last_activity: 0,
-                pending_permission: None,
-                last_hook_event: None,
-                subagents,
-                model: None,
-                permission_mode: None,
-                context_percent: None,
-                conversation_log: Vec::new(),
-                session_start: None,
-                transcript_path: None,
-                session_name: None,
-            },
-        );
-    }
-
-    map
-}
-fn extract_model_string(val: &Option<serde_json::Value>) -> Option<String> {
-    val.as_ref().and_then(|v| {
-        if let Some(s) = v.as_str() {
-            Some(s.to_string())
-        } else if let Some(obj) = v.as_object() {
-            obj.get("display_name")
-                .and_then(|n| n.as_str().map(|s| s.to_string()))
-                .or_else(|| obj.get("id").and_then(|n| n.as_str().map(|s| s.to_string())))
-        } else {
-            None
-        }
-    })
-}
-
-fn extract_context_percent_from_payload(
-    ctx: &Option<serde_json::Value>,
-    explicit: Option<u8>,
-) -> Option<u8> {
-    explicit.or_else(|| {
-        ctx.as_ref().and_then(|v| {
-            v.as_object()
-                .and_then(|o| o.get("used_percentage"))
-                .and_then(|p| p.as_f64().map(|n| n.round() as u8))
-        })
-    })
-}
-
-fn update_instance_from_hook(
-    instances: Arc<Mutex<HashMap<String, Instance>>>,
-    event: &HookEvent,
-    transcript_path: Option<String>,
-    sender_pid: Option<u32>,
-) {
-    // Pre-read transcript data before acquiring lock
-    let transcript_data = if event.event == "StatusLine" {
-        transcript_path.as_ref().map(|path| {
-            let session_start = transcript::read_session_start_from_transcript(path);
-            let preview = transcript::read_transcript_preview(path, 3);
-            (session_start, preview)
-        })
-    } else {
-        None
-    };
-
-    let instances_for_scrape = instances.clone();
-    let mut map = instances.lock();
-
-    let now_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-
-    let is_statusline = event.event == "StatusLine";
-    let is_permission_event = event.event == "PreToolUse"
-        && !matches!(
-            event.permission_mode.as_deref(),
-            Some("bypassPermissions" | "dontAsk" | "auto" | "acceptEdits")
-        );
-
-    let mut matched_id: Option<String> = None;
-    if let Some(spid) = sender_pid {
-        let candidate_id = format!("cc-{spid}");
-        if let Some(inst) = map.get(&candidate_id) {
-            if inst.working_directory == event.cwd || is_related_cwd(&inst.working_directory, &event.cwd) {
-                matched_id = Some(candidate_id);
-            }
-        }
-    }
-    if matched_id.is_none() {
-        if let Some(ref tp) = transcript_path {
-            matched_id = map.values().find(|i| i.transcript_path.as_ref() == Some(tp)).map(|i| i.id.clone());
-        }
-    }
-    if matched_id.is_none() {
-        let mut max_la = 0u64;
-        for i in map.values() {
-            if i.working_directory == event.cwd && i.last_activity > max_la {
-                max_la = i.last_activity;
-                matched_id = Some(i.id.clone());
-            }
-        }
-    }
-    if matched_id.is_none() {
-        let mut max_la = 0u64;
-        for i in map.values() {
-            if is_related_cwd(&i.working_directory, &event.cwd) && i.last_activity > max_la {
-                max_la = i.last_activity;
-                matched_id = Some(i.id.clone());
-            }
-        }
-    }
-
-    if let Some(ref id) = matched_id {
-        if let Some(instance) = map.get_mut(id) {
-            if is_statusline {
-                instance.last_activity = now_secs;
-                if let Some(ref tp) = transcript_path {
-                    if !tp.is_empty() {
-                        instance.transcript_path = Some(tp.clone());
-                    }
-                }
-                if let Some(ref sn) = event.session_name {
-                    if !sn.is_empty() {
-                        instance.session_name = Some(sn.clone());
-                    }
-                }
-                if let Some(ref m) = event.model {
-                    if !m.is_empty() {
-                        instance.model = Some(m.clone());
-                    }
-                }
-                if let Some(cp) = event.context_percent {
-                    instance.context_percent = Some(cp);
-                }
-                if instance.session_start.is_none() {
-                    if let Some((Some(start_ts), _)) = &transcript_data {
-                        instance.session_start = Some(*start_ts);
-                    }
-                }
-                if let Some((_, preview)) = &transcript_data {
-                    if !preview.is_empty() {
-                        instance.conversation_log = preview.clone();
-                    }
-                }
-                return;
-            }
-
-            let new_status = match event.event.as_str() {
-                "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PostToolUseFailure" => {
-                    "executing"
-                }
-                _ => "waiting",
-            };
-            instance.status = new_status.to_string();
-        instance.last_activity = now_secs;
-        instance.last_hook_event = Some(event.clone());
-        if let Some(ref pm) = event.permission_mode {
-            instance.permission_mode = Some(pm.clone());
-        }
-
-        if is_permission_event {
-            let tool_name = event.tool_name.clone().unwrap_or_else(|| "Tool".to_string());
-            let tool_use_id = event.tool_use_id.clone().unwrap_or_default();
-            let tty = platform::jump::get_process_tty(instance.pid);
-            let id = instance.id.clone();
-            thread::spawn(move || {
-                thread::sleep(Duration::from_millis(500));
-                let lines = tty.as_ref().map(|t| read_iterm2_last_lines(t, 30)).unwrap_or_default();
-                if let Some(parsed) = parse_permission_choices(&lines) {
-                    let mut map = instances_for_scrape.lock();
-                    if let Some(inst) = map.get_mut(&id) {
-                        inst.status = "needs_permission".to_string();
-                        inst.pending_permission = Some(PendingPermission {
-                            tool_name,
-                            tool_use_id,
-                            prompt: parsed.prompt,
-                            choices: parsed.choices,
-                            default_choice: parsed.default_choice,
-                        });
-                    }
-                }
-            });
-        } else {
-            instance.pending_permission = None;
-        }
-        }
-    } else if !is_statusline {
-        let id = format!("cc-{}", event.timestamp);
-        let status = if is_permission_event {
-            "needs_permission"
-        } else {
-            match event.event.as_str() {
-                "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PostToolUseFailure" => {
-                    "executing"
-                }
-                _ => "waiting",
-            }
-        };
-        map.insert(
-            id.clone(),
-            Instance {
-                id,
-                pid: 0,
-                status: status.to_string(),
-                working_directory: event.cwd.clone(),
-                terminal_app: "Unknown".to_string(),
-                last_activity: now_secs,
-                pending_permission: None,
-                last_hook_event: Some(event.clone()),
-                subagents: Vec::new(),
-                model: event.model.clone(),
-                permission_mode: event.permission_mode.clone(),
-                context_percent: event.context_percent,
-                conversation_log: Vec::new(),
-                session_start: None,
-                transcript_path: None,
-                session_name: None,
-            },
-        );
-    }
+    let states = state.adapter_states.lock();
+    let adapter_state = states.get(&instance_id).cloned().unwrap_or_default();
+    let preview = adapter.get_preview(&adapter_state);
+    Ok(preview.join("\n"))
 }
 
 fn start_state_monitor(
     instances: Arc<Mutex<HashMap<String, Instance>>>,
+    adapter_states: Arc<Mutex<HashMap<String, crate::adapter::AdapterState>>>,
+    registry: crate::adapter::AdapterRegistry,
     app_handle: tauri::AppHandle,
 ) {
     let mut notified_map: HashMap<String, bool> = HashMap::new();
@@ -666,26 +204,53 @@ fn start_state_monitor(
                 .unwrap()
                 .as_secs();
 
-            let discovered = discover_instances();
+            let discovered = registry.discover_all();
             let mut new_map = HashMap::new();
 
-            for (id, disc) in discovered {
-                let mut merged = disc;
+            for raw in discovered {
+                let id = raw.id.clone();
+                let mut instance = Instance {
+                    id: raw.id,
+                    pid: raw.pid,
+                    status: "waiting".to_string(),
+                    working_directory: raw.working_directory,
+                    terminal_app: raw.terminal_app,
+                    last_activity: 0,
+                    pending_permission: None,
+                    last_hook_event: None,
+                    subagents: Vec::new(),
+                    model: None,
+                    permission_mode: None,
+                    context_percent: None,
+                    conversation_log: Vec::new(),
+                    session_start: None,
+                    transcript_path: None,
+                    session_name: None,
+                };
                 if let Some(existing) = map.get(&id) {
-                    merged.status = existing.status.clone();
-                    merged.last_activity = existing.last_activity;
-                    merged.pending_permission = existing.pending_permission.clone();
-                    merged.last_hook_event = existing.last_hook_event.clone();
-                    merged.subagents = existing.subagents.clone();
-                    merged.model = existing.model.clone();
-                    merged.permission_mode = existing.permission_mode.clone();
-                    merged.context_percent = existing.context_percent;
-                    merged.conversation_log = existing.conversation_log.clone();
-                    merged.session_start = existing.session_start;
-                    merged.transcript_path = existing.transcript_path.clone();
-                    merged.session_name = existing.session_name.clone();
+                    instance.status = existing.status.clone();
+                    instance.last_activity = existing.last_activity;
+                    instance.pending_permission = existing.pending_permission.clone();
+                    instance.last_hook_event = existing.last_hook_event.clone();
+                    instance.subagents = existing.subagents.clone();
+                    instance.model = existing.model.clone();
+                    instance.permission_mode = existing.permission_mode.clone();
+                    instance.context_percent = existing.context_percent;
+                    instance.conversation_log = existing.conversation_log.clone();
+                    instance.session_start = existing.session_start;
+                    instance.transcript_path = existing.transcript_path.clone();
+                    instance.session_name = existing.session_name.clone();
                 }
-                new_map.insert(id.clone(), merged);
+
+                let adapter = registry.adapters.first().map(|a| a.as_ref());
+                if let Some(adapter) = adapter {
+                    let states = adapter_states.lock();
+                    let state = states.get(&id).cloned().unwrap_or_default();
+                    instance.conversation_log = adapter.get_preview(&state);
+                    instance.subagents = adapter.get_subagents(&state);
+                }
+
+                new_map.insert(id.clone(), instance);
                 notified_map.remove(&id);
             }
 
@@ -823,27 +388,19 @@ unsafe fn start_hover_tracker(window: tauri::WebviewWindow, running: Arc<std::sy
 }
 
 fn main() {
+    let mut registry = AdapterRegistry::new();
+    registry.register(std::sync::Arc::new(adapter::claude::ClaudeAdapter::new()));
+    let _ = registry.configure_all();
+
     let instances = Arc::new(Mutex::new(HashMap::new()));
+    let adapter_states: Arc<Mutex<HashMap<String, crate::adapter::AdapterState>>> = Arc::new(Mutex::new(HashMap::new()));
     let hover_running = Arc::new(std::sync::atomic::AtomicBool::new(true));
 
-    let script_path = hook::bridge::ensure_hook_script();
-    hook::bridge::ensure_claude_hooks_config(&script_path);
-
     let instances_for_hook = instances.clone();
+    let adapter_states_for_hook = adapter_states.clone();
+    let registry_for_hook = registry.clone();
     hook::server::start_hook_server(instances.clone(), move |payload| {
-        let model = extract_model_string(&payload.raw_model)
-            .or_else(|| {
-                payload.context_window.as_ref().and_then(|cw| {
-                    cw.as_object()
-                        .and_then(|o| o.get("model"))
-                        .and_then(|m| extract_model_string(&Some(m.clone())))
-                })
-            });
-        let context_percent = extract_context_percent_from_payload(
-            &payload.context_window,
-            payload.context_percent,
-        );
-        let event = HookEvent {
+        let hook_payload = adapter::HookPayload {
             event: payload.event.clone(),
             cwd: payload.cwd.clone(),
             timestamp: payload.timestamp,
@@ -851,11 +408,106 @@ fn main() {
             tool_input: payload.tool_input.clone(),
             permission_mode: payload.permission_mode.clone(),
             tool_use_id: payload.tool_use_id.clone(),
-            model,
-            context_percent,
+            model: payload.raw_model.as_ref().and_then(|v| v.as_str().map(|s| s.to_string()))
+                .or_else(|| {
+                    payload.context_window.as_ref().and_then(|cw| {
+                        cw.as_object().and_then(|o| o.get("model")).and_then(|m| m.as_str().map(|s| s.to_string()))
+                    })
+                }),
+            context_percent: None,
             session_name: payload.session_name.clone(),
+            transcript_path: payload.transcript_path.clone(),
+            sender_pid: payload.sender_pid,
         };
-        update_instance_from_hook(instances_for_hook.clone(), &event, payload.transcript_path.clone(), payload.sender_pid);
+
+        let adapter = match registry_for_hook.find_adapter_for_event(&hook_payload) {
+            Some(a) => a,
+            None => return,
+        };
+
+        let mut map = instances_for_hook.lock();
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let mut matched_id: Option<String> = None;
+        if let Some(spid) = payload.sender_pid {
+            let candidate_id = format!("cc-{spid}");
+            if let Some(inst) = map.get(&candidate_id) {
+                if inst.working_directory == payload.cwd || is_related_cwd(&inst.working_directory, &payload.cwd) {
+                    matched_id = Some(candidate_id);
+                }
+            }
+        }
+        if matched_id.is_none() {
+            if let Some(ref tp) = payload.transcript_path {
+                matched_id = map.values().find(|i| i.transcript_path.as_ref() == Some(tp)).map(|i| i.id.clone());
+            }
+        }
+        if matched_id.is_none() {
+            let mut max_la = 0u64;
+            for i in map.values() {
+                if i.working_directory == payload.cwd && i.last_activity > max_la {
+                    max_la = i.last_activity;
+                    matched_id = Some(i.id.clone());
+                }
+            }
+        }
+        if matched_id.is_none() {
+            let mut max_la = 0u64;
+            for i in map.values() {
+                if is_related_cwd(&i.working_directory, &payload.cwd) && i.last_activity > max_la {
+                    max_la = i.last_activity;
+                    matched_id = Some(i.id.clone());
+                }
+            }
+        }
+
+        if let Some(ref id) = matched_id {
+            if let Some(mut instance) = map.remove(id) {
+                let mut states = adapter_states_for_hook.lock();
+                let mut adapter_state = states.remove(id).unwrap_or_default();
+                adapter.handle_hook(&hook_payload, &mut adapter_state, &mut map);
+                instance.status = adapter_state.status.clone();
+                instance.last_activity = adapter_state.last_activity.max(instance.last_activity);
+                instance.pending_permission = adapter_state.pending_permission.clone();
+                instance.last_hook_event = adapter_state.last_hook_event.clone();
+                instance.model = adapter_state.model.clone().or(instance.model.clone());
+                instance.permission_mode = adapter_state.permission_mode.clone().or(instance.permission_mode.clone());
+                instance.context_percent = adapter_state.context_percent.or(instance.context_percent);
+                instance.conversation_log = adapter_state.conversation_log.clone();
+                instance.session_start = adapter_state.session_start.or(instance.session_start);
+                instance.transcript_path = adapter_state.transcript_path.clone().or(instance.transcript_path.clone());
+                instance.session_name = adapter_state.session_name.clone().or(instance.session_name.clone());
+                states.insert(id.clone(), adapter_state);
+                map.insert(id.clone(), instance);
+            }
+        } else {
+            let id = format!("cc-{}", payload.timestamp);
+            let mut new_state = crate::adapter::AdapterState::default();
+            adapter.handle_hook(&hook_payload, &mut new_state, &mut map);
+            let instance = Instance {
+                id: id.clone(),
+                pid: 0,
+                status: new_state.status.clone(),
+                working_directory: payload.cwd.clone(),
+                terminal_app: "Unknown".to_string(),
+                last_activity: now_secs,
+                pending_permission: new_state.pending_permission.clone(),
+                last_hook_event: new_state.last_hook_event.clone(),
+                subagents: Vec::new(),
+                model: new_state.model.clone(),
+                permission_mode: new_state.permission_mode.clone(),
+                context_percent: new_state.context_percent,
+                conversation_log: new_state.conversation_log.clone(),
+                session_start: new_state.session_start,
+                transcript_path: new_state.transcript_path.clone(),
+                session_name: new_state.session_name.clone(),
+            };
+            adapter_states_for_hook.lock().insert(id.clone(), new_state);
+            map.insert(id, instance);
+        }
     });
 
     tauri::Builder::default()
@@ -863,6 +515,8 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .manage(AppState {
             instances: instances.clone(),
+            registry: registry.clone(),
+            adapter_states: adapter_states.clone(),
         })
         .setup(move |app| {
             #[cfg(target_os = "macos")]
@@ -902,7 +556,7 @@ fn main() {
                     }
                 }
             }
-            start_state_monitor(instances.clone(), app.handle().clone());
+            start_state_monitor(instances.clone(), adapter_states.clone(), registry.clone(), app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![get_instances, jump_to_terminal, respond_permission, get_instance_preview, resize_window_centered])
