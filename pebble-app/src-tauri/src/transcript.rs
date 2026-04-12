@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Seek, SeekFrom};
 
 pub fn read_transcript_preview(path: &str, n: usize) -> Vec<String> {
     if n == 0 {

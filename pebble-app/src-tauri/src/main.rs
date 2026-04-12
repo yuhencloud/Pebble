@@ -8,7 +8,7 @@ mod session;
 mod hook;
 mod adapter;
 
-use adapter::{Adapter, AdapterRegistry};
+use adapter::AdapterRegistry;
 use types::{AppState, Instance};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -511,7 +511,7 @@ fn main() {
                     last_activity: now_secs,
                     pending_permission: new_state.pending_permission.clone(),
                     last_hook_event: new_state.last_hook_event.clone(),
-                    subagents: new_state.subagents.clone(),
+                    subagents: Vec::new(),
                     model: new_state.model.clone(),
                     permission_mode: new_state.permission_mode.clone(),
                     context_percent: new_state.context_percent,

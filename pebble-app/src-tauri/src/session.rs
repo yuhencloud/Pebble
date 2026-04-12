@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use serde::Deserialize;
+
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Deserialize)]
