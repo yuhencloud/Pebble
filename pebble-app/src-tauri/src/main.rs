@@ -366,18 +366,14 @@ unsafe fn setup_notch_overlay(window: &tauri::WebviewWindow) {
         ns_window.setMovableByWindowBackground_(false);
 
         // Position window top-center exactly
-        let mut screen: id = msg_send![ns_window, screen];
-        if screen.is_null() {
-            screen = msg_send![class!(NSScreen), mainScreen];
-            if screen.is_null() { return; }
-        }
+        let screen: id = msg_send![ns_window, screen];
+        if screen.is_null() { return; }
         let frame: NSRect = msg_send![screen, frame];
         let win_size = ns_window.frame().size;
-        let x = frame.origin.x + frame.size.width / 2.0 - win_size.width / 2.0;
-        let y = frame.origin.y + frame.size.height - win_size.height;
+        let x = frame.size.width / 2.0 - win_size.width / 2.0;
+        let y = frame.size.height;
         let origin = NSPoint::new(x, y);
-        let new_frame = NSRect::new(origin, NSSize::new(win_size.width, win_size.height));
-        let () = msg_send![ns_window, setFrame:new_frame display:true];
+        let () = msg_send![ns_window, setFrameTopLeftPoint: origin];
 
         // Ensure transparent background so CSS clip-path corners show through
         let color_cls = class!(NSColor);

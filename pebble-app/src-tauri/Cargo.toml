@@ -1,5 +1,5 @@
 [package]
-name = "pebble-app"
+name = "pebble"
 version = "0.1.0"
 description = "Pebble - AI Coding Agent Monitor"
 authors = ["you"]
