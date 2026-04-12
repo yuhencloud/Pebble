@@ -82,23 +82,24 @@ fn respond_permission(
     instance_id: String,
     choice: String,
     state: State<'_, AppState>,
+    permission_store: State<'_, hook::server::PermissionResponseStore>,
 ) -> Result<(), String> {
-    let instance = {
-        let map = state.instances.lock();
-        map.values()
-            .find(|i| i.id == instance_id)
-            .cloned()
-            .ok_or("Instance not found")?
-    };
+    let map = state.instances.lock();
+    let instance = map
+        .values()
+        .find(|i| i.id == instance_id)
+        .cloned()
+        .ok_or("Instance not found")?;
+    drop(map);
 
     let adapter = state.registry.find_adapter_for_event(&adapter::HookPayload {
-        event: "discover".to_string(),
+        event: "PermissionRequest".to_string(),
         cwd: instance.working_directory.clone(),
         timestamp: 0,
         tool_name: None,
         tool_input: None,
         permission_mode: None,
-        tool_use_id: None,
+        tool_use_id: instance.pending_permission.as_ref().map(|p| p.tool_use_id.clone()),
         model: None,
         context_percent: None,
         session_name: None,
@@ -106,12 +107,22 @@ fn respond_permission(
         sender_pid: Some(instance.pid),
     }).ok_or("No adapter found")?;
 
-    adapter.respond_permission(&instance, &choice.to_lowercase(), None)?;
+    let response_json = adapter.respond_permission(&instance, &choice.to_lowercase(), None)?;
 
-    let mut map = state.instances.lock();
-    if let Some(inst) = map.values_mut().find(|i| i.id == instance_id) {
-        inst.status = "executing".to_string();
-        inst.pending_permission = None;
+    let key = instance
+        .pending_permission
+        .as_ref()
+        .map(|p| p.tool_use_id.clone())
+        .unwrap_or_else(|| instance_id.clone());
+
+    permission_store.set(key, response_json);
+
+    {
+        let mut map = state.instances.lock();
+        if let Some(inst) = map.values_mut().find(|i| i.id == instance_id) {
+            inst.status = "executing".to_string();
+            inst.pending_permission = None;
+        }
     }
 
     Ok(())
@@ -395,120 +406,125 @@ fn main() {
     let instances = Arc::new(Mutex::new(HashMap::new()));
     let adapter_states: Arc<Mutex<HashMap<String, crate::adapter::AdapterState>>> = Arc::new(Mutex::new(HashMap::new()));
     let hover_running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let permission_store = hook::server::PermissionResponseStore::new();
 
     let instances_for_hook = instances.clone();
     let adapter_states_for_hook = adapter_states.clone();
     let registry_for_hook = registry.clone();
-    hook::server::start_hook_server(instances.clone(), move |payload| {
-        let hook_payload = adapter::HookPayload {
-            event: payload.event.clone(),
-            cwd: payload.cwd.clone(),
-            timestamp: payload.timestamp,
-            tool_name: payload.tool_name.clone(),
-            tool_input: payload.tool_input.clone(),
-            permission_mode: payload.permission_mode.clone(),
-            tool_use_id: payload.tool_use_id.clone(),
-            model: payload.raw_model.as_ref().and_then(|v| v.as_str().map(|s| s.to_string()))
-                .or_else(|| {
-                    payload.context_window.as_ref().and_then(|cw| {
-                        cw.as_object().and_then(|o| o.get("model")).and_then(|m| m.as_str().map(|s| s.to_string()))
-                    })
-                }),
-            context_percent: None,
-            session_name: payload.session_name.clone(),
-            transcript_path: payload.transcript_path.clone(),
-            sender_pid: payload.sender_pid,
-        };
-
-        let adapter = match registry_for_hook.find_adapter_for_event(&hook_payload) {
-            Some(a) => a,
-            None => return,
-        };
-
-        let mut map = instances_for_hook.lock();
-        let now_secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-
-        let mut matched_id: Option<String> = None;
-        if let Some(spid) = payload.sender_pid {
-            let candidate_id = format!("cc-{spid}");
-            if let Some(inst) = map.get(&candidate_id) {
-                if inst.working_directory == payload.cwd || is_related_cwd(&inst.working_directory, &payload.cwd) {
-                    matched_id = Some(candidate_id);
-                }
-            }
-        }
-        if matched_id.is_none() {
-            if let Some(ref tp) = payload.transcript_path {
-                matched_id = map.values().find(|i| i.transcript_path.as_ref() == Some(tp)).map(|i| i.id.clone());
-            }
-        }
-        if matched_id.is_none() {
-            let mut max_la = 0u64;
-            for i in map.values() {
-                if i.working_directory == payload.cwd && i.last_activity > max_la {
-                    max_la = i.last_activity;
-                    matched_id = Some(i.id.clone());
-                }
-            }
-        }
-        if matched_id.is_none() {
-            let mut max_la = 0u64;
-            for i in map.values() {
-                if is_related_cwd(&i.working_directory, &payload.cwd) && i.last_activity > max_la {
-                    max_la = i.last_activity;
-                    matched_id = Some(i.id.clone());
-                }
-            }
-        }
-
-        if let Some(ref id) = matched_id {
-            if let Some(mut instance) = map.remove(id) {
-                let mut states = adapter_states_for_hook.lock();
-                let mut adapter_state = states.remove(id).unwrap_or_default();
-                adapter.handle_hook(&hook_payload, &mut adapter_state, &mut map);
-                instance.status = adapter_state.status.clone();
-                instance.last_activity = adapter_state.last_activity.max(instance.last_activity);
-                instance.pending_permission = adapter_state.pending_permission.clone();
-                instance.last_hook_event = adapter_state.last_hook_event.clone();
-                instance.model = adapter_state.model.clone().or(instance.model.clone());
-                instance.permission_mode = adapter_state.permission_mode.clone().or(instance.permission_mode.clone());
-                instance.context_percent = adapter_state.context_percent.or(instance.context_percent);
-                instance.conversation_log = adapter_state.conversation_log.clone();
-                instance.session_start = adapter_state.session_start.or(instance.session_start);
-                instance.transcript_path = adapter_state.transcript_path.clone().or(instance.transcript_path.clone());
-                instance.session_name = adapter_state.session_name.clone().or(instance.session_name.clone());
-                states.insert(id.clone(), adapter_state);
-                map.insert(id.clone(), instance);
-            }
-        } else {
-            let id = format!("cc-{}", payload.timestamp);
-            let mut new_state = crate::adapter::AdapterState::default();
-            adapter.handle_hook(&hook_payload, &mut new_state, &mut map);
-            let instance = Instance {
-                id: id.clone(),
-                pid: 0,
-                status: new_state.status.clone(),
-                working_directory: payload.cwd.clone(),
-                terminal_app: "Unknown".to_string(),
-                last_activity: now_secs,
-                pending_permission: new_state.pending_permission.clone(),
-                last_hook_event: new_state.last_hook_event.clone(),
-                subagents: Vec::new(),
-                model: new_state.model.clone(),
-                permission_mode: new_state.permission_mode.clone(),
-                context_percent: new_state.context_percent,
-                conversation_log: new_state.conversation_log.clone(),
-                session_start: new_state.session_start,
-                transcript_path: new_state.transcript_path.clone(),
-                session_name: new_state.session_name.clone(),
+    hook::server::start_hook_server(
+        instances.clone(),
+        permission_store.clone(),
+        move |payload| {
+            let hook_payload = adapter::HookPayload {
+                event: payload.event.clone(),
+                cwd: payload.cwd.clone(),
+                timestamp: payload.timestamp,
+                tool_name: payload.tool_name.clone(),
+                tool_input: payload.tool_input.clone(),
+                permission_mode: payload.permission_mode.clone(),
+                tool_use_id: payload.tool_use_id.clone(),
+                model: payload.raw_model.as_ref().and_then(|v| v.as_str().map(|s| s.to_string()))
+                    .or_else(|| {
+                        payload.context_window.as_ref().and_then(|cw| {
+                            cw.as_object().and_then(|o| o.get("model")).and_then(|m| m.as_str().map(|s| s.to_string()))
+                        })
+                    }),
+                context_percent: None,
+                session_name: payload.session_name.clone(),
+                transcript_path: payload.transcript_path.clone(),
+                sender_pid: payload.sender_pid,
             };
-            adapter_states_for_hook.lock().insert(id.clone(), new_state);
-            map.insert(id, instance);
+
+            let adapter = match registry_for_hook.find_adapter_for_event(&hook_payload) {
+                Some(a) => a,
+                None => return,
+            };
+
+            let mut map = instances_for_hook.lock();
+            let now_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+
+            let mut matched_id: Option<String> = None;
+            if let Some(spid) = payload.sender_pid {
+                let candidate_id = format!("cc-{spid}");
+                if let Some(inst) = map.get(&candidate_id) {
+                    if inst.working_directory == payload.cwd || is_related_cwd(&inst.working_directory, &payload.cwd) {
+                        matched_id = Some(candidate_id);
+                    }
+                }
+            }
+            if matched_id.is_none() {
+                if let Some(ref tp) = payload.transcript_path {
+                    matched_id = map.values().find(|i| i.transcript_path.as_ref() == Some(tp)).map(|i| i.id.clone());
+                }
+            }
+            if matched_id.is_none() {
+                let mut max_la = 0u64;
+                for i in map.values() {
+                    if i.working_directory == payload.cwd && i.last_activity > max_la {
+                        max_la = i.last_activity;
+                        matched_id = Some(i.id.clone());
+                    }
+                }
+            }
+            if matched_id.is_none() {
+                let mut max_la = 0u64;
+                for i in map.values() {
+                    if is_related_cwd(&i.working_directory, &payload.cwd) && i.last_activity > max_la {
+                        max_la = i.last_activity;
+                        matched_id = Some(i.id.clone());
+                    }
+                }
+            }
+
+            if let Some(ref id) = matched_id {
+                if let Some(mut instance) = map.remove(id) {
+                    let mut states = adapter_states_for_hook.lock();
+                    let mut adapter_state = states.remove(id).unwrap_or_default();
+                    adapter.handle_hook(&hook_payload, &mut adapter_state, &mut map);
+                    instance.status = adapter_state.status.clone();
+                    instance.last_activity = adapter_state.last_activity.max(instance.last_activity);
+                    instance.pending_permission = adapter_state.pending_permission.clone();
+                    instance.last_hook_event = adapter_state.last_hook_event.clone();
+                    instance.model = adapter_state.model.clone().or(instance.model.clone());
+                    instance.permission_mode = adapter_state.permission_mode.clone().or(instance.permission_mode.clone());
+                    instance.context_percent = adapter_state.context_percent.or(instance.context_percent);
+                    instance.conversation_log = adapter_state.conversation_log.clone();
+                    instance.session_start = adapter_state.session_start.or(instance.session_start);
+                    instance.transcript_path = adapter_state.transcript_path.clone().or(instance.transcript_path.clone());
+                    instance.session_name = adapter_state.session_name.clone().or(instance.session_name.clone());
+                    states.insert(id.clone(), adapter_state);
+                    map.insert(id.clone(), instance);
+                }
+            } else {
+                let id = format!("cc-{}", payload.timestamp);
+                let mut new_state = crate::adapter::AdapterState::default();
+                adapter.handle_hook(&hook_payload, &mut new_state, &mut map);
+                let instance = Instance {
+                    id: id.clone(),
+                    pid: 0,
+                    status: new_state.status.clone(),
+                    working_directory: payload.cwd.clone(),
+                    terminal_app: "Unknown".to_string(),
+                    last_activity: now_secs,
+                    pending_permission: new_state.pending_permission.clone(),
+                    last_hook_event: new_state.last_hook_event.clone(),
+                    subagents: new_state.subagents.clone(),
+                    model: new_state.model.clone(),
+                    permission_mode: new_state.permission_mode.clone(),
+                    context_percent: new_state.context_percent,
+                    conversation_log: new_state.conversation_log.clone(),
+                    session_start: new_state.session_start,
+                    transcript_path: new_state.transcript_path.clone(),
+                    session_name: new_state.session_name.clone(),
+                };
+                adapter_states_for_hook.lock().insert(id.clone(), new_state);
+                map.insert(id, instance);
+            }
         }
-    });
+    );
 
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
@@ -518,6 +534,7 @@ fn main() {
             registry: registry.clone(),
             adapter_states: adapter_states.clone(),
         })
+        .manage(permission_store.clone())
         .setup(move |app| {
             #[cfg(target_os = "macos")]
             {
