@@ -1,3 +1,5 @@
+pub mod claude;
+
 use crate::types::{Instance, SubagentInfo};
 use std::collections::HashMap;
 
