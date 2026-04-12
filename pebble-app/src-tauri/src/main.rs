@@ -72,6 +72,8 @@ fn jump_to_terminal(instance_id: String, state: State<'_, AppState>) -> Result<(
         context_percent: None,
         session_name: None,
         transcript_path: None,
+        choices: None,
+        default_choice: None,
     }).ok_or("No adapter found")?;
     adapter.jump_to_terminal(&instance)
 }
@@ -103,17 +105,29 @@ fn respond_permission(
         context_percent: None,
         session_name: None,
         transcript_path: None,
+        choices: None,
+        default_choice: None,
     }).ok_or("No adapter found")?;
 
-    let response_json = adapter.respond_permission(&instance, &choice.to_lowercase(), None)?;
+    let event_type = instance.last_hook_event.as_ref().map(|e| e.event.clone()).unwrap_or_else(|| "PermissionRequest".to_string());
+    let response_json = adapter.respond_permission(&instance, &choice, None)?;
 
     let key = instance
         .pending_permission
         .as_ref()
         .map(|p| p.tool_use_id.clone())
-        .unwrap_or_else(|| instance_id.clone());
+        .unwrap_or_else(|| {
+            instance
+                .last_hook_event
+                .as_ref()
+                .map(|e| e.timestamp.to_string())
+                .unwrap_or_else(|| instance_id.clone())
+        });
 
-    permission_store.set(key, response_json);
+    eprintln!("[pebble-respond] instance_id={} event={} choice={} key={} body={}",
+        instance_id, event_type, choice, key, response_json);
+
+    permission_store.set(key.clone(), response_json.clone());
 
     {
         let mut map = state.instances.lock();
@@ -186,6 +200,8 @@ fn get_instance_preview(instance_id: String, state: State<'_, AppState>) -> Resu
         context_percent: None,
         session_name: None,
         transcript_path: None,
+        choices: None,
+        default_choice: None,
     }).ok_or("No adapter found")?;
 
     let states = state.adapter_states.lock();
@@ -429,6 +445,8 @@ fn main() {
                 context_percent: None,
                 session_name: payload.session_name.clone(),
                 transcript_path: payload.transcript_path.clone(),
+                choices: payload.choices.clone(),
+                default_choice: payload.default_choice.clone(),
                     };
 
             let adapter = match registry_for_hook.find_adapter_for_event(&hook_payload) {

@@ -28,6 +28,8 @@ pub struct HookPayload {
     pub context_percent: Option<u8>,
     pub session_name: Option<String>,
     pub transcript_path: Option<String>,
+    pub choices: Option<Vec<String>>,
+    pub default_choice: Option<String>,
 }
 
 /// Mutable state held per instance by the adapter

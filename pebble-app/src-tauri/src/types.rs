@@ -95,6 +95,10 @@ pub struct IncomingHookPayload {
     pub session_name: Option<String>,
     #[serde(default, rename = "sender_pid")]
     pub sender_pid: Option<u32>,
+    #[serde(default, rename = "choices")]
+    pub choices: Option<Vec<String>>,
+    #[serde(default, rename = "default_choice")]
+    pub default_choice: Option<String>,
 }
 
 pub struct AppState {

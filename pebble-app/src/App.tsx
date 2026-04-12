@@ -66,6 +66,11 @@ function getSessionName(inst: Instance): string {
   if (inst.session_name) {
     return inst.session_name;
   }
+  // Prefer working directory name over transcript UUID fallback
+  const cwdName = inst.working_directory.split(/[/\\]/).pop();
+  if (cwdName && cwdName.length > 0) {
+    return cwdName;
+  }
   if (inst.transcript_path) {
     const parts = inst.transcript_path.split(/[/\\]/);
     const idx = parts.indexOf("transcripts");
@@ -74,11 +79,11 @@ function getSessionName(inst: Instance): string {
     }
     const fileName = parts[parts.length - 1] || "";
     const slug = fileName.replace(/\.jsonl?$/, "");
-    if (slug && slug.length > 0) {
+    if (slug && slug.length > 0 && !/^[0-9a-f-]{36}$/i.test(slug)) {
       return slug;
     }
   }
-  return inst.working_directory.split(/[/\\]/).pop() || inst.working_directory;
+  return inst.working_directory;
 }
 
 function formatDuration(startTs: number): string {

@@ -120,23 +120,37 @@ impl Adapter for ClaudeAdapter {
                 Some("bypassPermissions" | "dontAsk" | "auto" | "acceptEdits")
             );
 
-        if payload.event == "PermissionRequest" {
+        if payload.event == "PermissionRequest" || is_permission_event {
             state.status = "needs_permission".to_string();
-            state.pending_permission = Some(PendingPermission {
-                tool_name: payload.tool_name.clone().unwrap_or_else(|| "Claude".to_string()),
-                tool_use_id: payload.tool_use_id.clone().unwrap_or_default(),
-                prompt: format!("Allow {}?", payload.tool_name.clone().unwrap_or_else(|| "tool".to_string())),
-                choices: vec!["Allow".to_string(), "Deny".to_string()],
-                default_choice: Some("Allow".to_string()),
+            let tool_name = payload.tool_name.clone().unwrap_or_else(|| "Claude".to_string());
+            let is_dangerous = matches!(
+                tool_name.as_str(),
+                "Bash" | "Edit" | "Write" | "Read" | "MultiEdit" | "Delete"
+            );
+            let choices = payload.choices.clone().unwrap_or_else(|| {
+                if is_dangerous {
+                    vec![
+                        "Allow for this conversation".to_string(),
+                        "Allow once".to_string(),
+                        "Deny".to_string(),
+                    ]
+                } else {
+                    vec!["Allow".to_string(), "Deny".to_string()]
+                }
             });
-        } else if is_permission_event {
-            state.status = "needs_permission".to_string();
+            let default_choice = payload.default_choice.clone().or_else(|| {
+                if is_dangerous {
+                    Some("Allow once".to_string())
+                } else {
+                    Some("Allow".to_string())
+                }
+            });
             state.pending_permission = Some(PendingPermission {
-                tool_name: payload.tool_name.clone().unwrap_or_else(|| "Claude".to_string()),
-                tool_use_id: payload.tool_use_id.clone().unwrap_or_default(),
-                prompt: format!("Allow {}?", payload.tool_name.clone().unwrap_or_else(|| "tool".to_string())),
-                choices: vec!["Allow".to_string(), "Deny".to_string()],
-                default_choice: Some("Allow".to_string()),
+                tool_name: tool_name.clone(),
+                tool_use_id: payload.tool_use_id.clone().unwrap_or_else(|| payload.timestamp.to_string()),
+                prompt: format!("Allow {}?", tool_name),
+                choices,
+                default_choice,
             });
         } else {
             let new_status = match payload.event.as_str() {
@@ -194,28 +208,43 @@ impl Adapter for ClaudeAdapter {
 
     fn respond_permission(
         &self,
-        _instance: &Instance,
+        instance: &Instance,
         decision: &str,
         reason: Option<&str>,
     ) -> Result<String, String> {
-        let resp = match decision {
-            "allow" => serde_json::json!({
+        let trimmed = decision.trim();
+        let is_pretooluse = instance
+            .last_hook_event
+            .as_ref()
+            .map(|e| e.event == "PreToolUse")
+            .unwrap_or(false);
+        let behavior = if trimmed.eq_ignore_ascii_case("deny") { "deny" } else { "allow" };
+
+        if is_pretooluse {
+            let mut hso = serde_json::json!({
+                "hookEventName": "PreToolUse",
+                "permissionDecision": behavior
+            });
+            if let Some(r) = reason {
+                hso["permissionDecisionReason"] = serde_json::json!(r);
+            }
+            Ok(serde_json::json!({
+                "continue": true,
+                "hookSpecificOutput": hso
+            }).to_string())
+        } else {
+            let mut decision_obj = serde_json::json!({ "behavior": behavior });
+            if behavior == "deny" {
+                decision_obj["message"] = serde_json::json!(reason.unwrap_or("Denied by user via Pebble"));
+            }
+            Ok(serde_json::json!({
+                "continue": true,
                 "hookSpecificOutput": {
                     "hookEventName": "PermissionRequest",
-                    "decision": { "behavior": "allow" }
+                    "decision": decision_obj
                 }
-            }),
-            "deny" => serde_json::json!({
-                "hookSpecificOutput": {
-                    "hookEventName": "PermissionRequest",
-                    "decision": {
-                        "behavior": "deny",
-                        "message": reason.unwrap_or("Denied by user via Pebble")
-                    }
-                }
-            }),
-            _ => return Err("Invalid decision".to_string()),
-        };
-        Ok(resp.to_string())
+            }).to_string())
+        }
     }
 }
+
