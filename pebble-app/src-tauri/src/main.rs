@@ -498,8 +498,8 @@ fn discover_instances() -> HashMap<String, Instance> {
         .unwrap_or_default();
 
     for p in claudes {
-        let cwd = get_process_cwd(p.pid).unwrap_or_else(|| "Unknown".to_string());
-        let terminal = detect_terminal_app(p.pid, &ps_output);
+        let cwd = platform::cwd::get_process_cwd(p.pid).unwrap_or_else(|| "Unknown".to_string());
+        let terminal = platform::terminal::detect_terminal_app(p.pid, &ps_output);
         let id = format!("cc-{}", p.pid);
         let subagents = collect_subagents(p.pid, &children, 0);
 
@@ -528,60 +528,6 @@ fn discover_instances() -> HashMap<String, Instance> {
 
     map
 }
-fn get_process_cwd(pid: u32) -> Option<String> {
-    let output = Command::new("lsof")
-        .args(&["-a", "-d", "cwd", "-p", &pid.to_string(), "-Fn"])
-        .output()
-        .ok()?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    for line in stdout.lines() {
-        if line.starts_with('n') {
-            return Some(line[1..].to_string());
-        }
-    }
-
-    None
-}
-
-fn detect_terminal_app(pid: u32, ps_output: &str) -> String {
-    let mut current_pid = pid;
-    for _ in 0..10 {
-        let line = ps_output.lines().find(|l| {
-            let p: Vec<&str> = l.split_whitespace().collect();
-            p.len() >= 3 && p[0].parse::<u32>().ok() == Some(current_pid)
-        });
-        if let Some(line) = line {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            let comm = parts[2].to_lowercase();
-            let args = if parts.len() > 3 {
-                parts[3..].join(" ").to_lowercase()
-            } else {
-                String::new()
-            };
-            let full = format!("{} {}", comm, args);
-            if full.contains("iterm2") || full.contains("iterm") {
-                return "iTerm2".to_string();
-            }
-            if full.contains("terminal") || full.contains("apple_terminal") {
-                return "Terminal.app".to_string();
-            }
-            if full.contains("tmux") {
-                return "tmux".to_string();
-            }
-            if let Ok(ppid) = parts[1].parse::<u32>() {
-                if ppid == current_pid || ppid == 1 || ppid == 0 {
-                    break;
-                }
-                current_pid = ppid;
-                continue;
-            }
-        }
-        break;
-    }
-    "Unknown".to_string()
-}
-
 fn extract_model_string(val: &Option<serde_json::Value>) -> Option<String> {
     val.as_ref().and_then(|v| {
         if let Some(s) = v.as_str() {
