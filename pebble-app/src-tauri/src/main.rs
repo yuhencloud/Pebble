@@ -70,6 +70,8 @@ struct Instance {
     session_start: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     transcript_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_name: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -89,6 +91,8 @@ struct HookEvent {
     model: Option<String>,
     #[serde(default, rename = "context_percent")]
     context_percent: Option<u8>,
+    #[serde(default, rename = "session_name")]
+    session_name: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -112,6 +116,8 @@ struct IncomingHookPayload {
     context_window: Option<serde_json::Value>,
     #[serde(default, rename = "transcript_path")]
     transcript_path: Option<String>,
+    #[serde(default, rename = "session_name")]
+    session_name: Option<String>,
     #[serde(default, rename = "sender_pid")]
     sender_pid: Option<u32>,
 }
@@ -252,77 +258,44 @@ fn resize_window_centered(
 
 #[tauri::command]
 fn get_instance_preview(instance_id: String, state: State<'_, AppState>) -> Result<String, String> {
-    {
-        let map = state.instances.lock();
-        let instance = map
-            .values()
-            .find(|i| i.id == instance_id)
-            .cloned()
-            .ok_or("Instance not found")?;
+    let map = state.instances.lock();
+    let instance = map
+        .values()
+        .find(|i| i.id == instance_id)
+        .cloned()
+        .ok_or("Instance not found")?;
 
-        // Primary: use conversation log if available
-        if !instance.conversation_log.is_empty() {
-            let start = instance.conversation_log.len().saturating_sub(3);
-            let lines = instance.conversation_log[start..].join("\n");
-            return Ok(lines);
-        }
+    // Primary: use conversation log if available
+    if !instance.conversation_log.is_empty() {
+        let start = instance.conversation_log.len().saturating_sub(3);
+        let lines = instance.conversation_log[start..].join("\n");
+        return Ok(lines);
     }
 
-    // Fallback: read from iTerm2 if applicable, and try to parse badges
-    {
-        let mut map = state.instances.lock();
-        let instance = map
-            .values_mut()
-            .find(|i| i.id == instance_id)
-            .ok_or("Instance not found")?;
+    // Fallback: read from iTerm2 if applicable
+    if instance.terminal_app == "iTerm2" {
+        if let Some(tty) = get_process_tty(instance.pid) {
+            let lines = read_iterm2_last_lines(&tty, 8);
+            let filtered: Vec<String> = lines
+                .into_iter()
+                .map(|s| s.trim().to_string())
+                .filter(|s| {
+                    !s.is_empty()
+                        && !s.starts_with('$')
+                        && !s.starts_with('#')
+                        && !s.starts_with('>')
+                        && !s.starts_with('%')
+                        && !s.starts_with("$")
+                        && !s.starts_with("❯")
+                        && !s.starts_with("●")
+                })
+                .collect();
 
-        if instance.terminal_app == "iTerm2" {
-            if let Some(tty) = get_process_tty(instance.pid) {
-                let lines = read_iterm2_last_lines(&tty, 8);
-                let filtered: Vec<String> = lines
-                    .into_iter()
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| {
-                        !s.is_empty()
-                            && !s.starts_with('$')
-                            && !s.starts_with('#')
-                            && !s.starts_with('>')
-                            && !s.starts_with('%')
-                            && !s.starts_with("$")
-                            && !s.starts_with("❯")
-                            && !s.starts_with("●")
-                    })
-                    .collect();
-
-                // Try to parse context_percent and model from terminal text
-                for line in &filtered {
-                    if instance.context_percent.is_none() {
-                        if let Some(start) = line.find("Context:") {
-                            let rest = &line[start + 8..];
-                            if let Some(end) = rest.find('%') {
-                                if let Ok(pct) = rest[..end].trim().parse::<u8>() {
-                                    instance.context_percent = Some(pct);
-                                }
-                            }
-                        }
-                    }
-                    if instance.model.is_none() {
-                        for m in ["claude-opus", "claude-sonnet", "claude-haiku"] {
-                            if line.to_lowercase().contains(m) {
-                                let simple = m.replace("claude-", "");
-                                instance.model = Some(simple.to_string());
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                if filtered.len() >= 2 {
-                    let start = filtered.len().saturating_sub(3);
-                    return Ok(filtered[start..].join("\n"));
-                } else if let Some(last) = filtered.last() {
-                    return Ok(last.clone());
-                }
+            if filtered.len() >= 2 {
+                let start = filtered.len().saturating_sub(3);
+                return Ok(filtered[start..].join("\n"));
+            } else if let Some(last) = filtered.last() {
+                return Ok(last.clone());
             }
         }
     }
@@ -667,6 +640,7 @@ fn discover_instances() -> HashMap<String, Instance> {
                     conversation_log: Vec::new(),
                     session_start: None,
                     transcript_path: None,
+                    session_name: None,
                 },
             );
         }
@@ -877,9 +851,23 @@ fn read_session_start_from_transcript(path: &str) -> Option<u64> {
 
 fn handle_http_request(mut stream: TcpStream, instances: Arc<Mutex<HashMap<String, Instance>>>) {
     let mut buf = [0u8; 65536];
-    if let Ok(n) = stream.read(&mut buf) {
-        let req = String::from_utf8_lossy(&buf[..n]);
-        let first_line = req.lines().next().unwrap_or("");
+    let mut n = 0usize;
+    loop {
+        match stream.read(&mut buf[n..]) {
+            Ok(0) => break,
+            Ok(bytes_read) => {
+                n += bytes_read;
+                if n == buf.len() {
+                    // Buffer full; respond with 413 and abort
+                    let _ = stream.write_all(b"HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\n\r\n");
+                    return;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    let req = String::from_utf8_lossy(&buf[..n]);
+    let first_line = req.lines().next().unwrap_or("");
 
         if first_line.starts_with("GET /instances") {
             let map = instances.lock();
@@ -919,6 +907,7 @@ fn handle_http_request(mut stream: TcpStream, instances: Arc<Mutex<HashMap<Strin
                         tool_use_id: payload.tool_use_id,
                         model,
                         context_percent,
+                        session_name: payload.session_name,
                     };
                     update_instance_from_hook(instances, &event, payload.transcript_path, payload.sender_pid);
                 }
@@ -927,7 +916,6 @@ fn handle_http_request(mut stream: TcpStream, instances: Arc<Mutex<HashMap<Strin
         } else {
             let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
         }
-    }
 }
 
 fn start_hook_server(instances: Arc<Mutex<HashMap<String, Instance>>>) {
@@ -1015,37 +1003,46 @@ fn update_instance_from_hook(
 
     if let Some(ref id) = matched_id {
         if let Some(instance) = map.get_mut(id) {
-        if is_statusline {
-            instance.last_activity = now_secs;
-            if let Some(ref tp) = transcript_path {
-                instance.transcript_path = Some(tp.clone());
-            }
-            if let Some(ref m) = event.model {
-                instance.model = Some(m.clone());
-            }
-            if let Some(cp) = event.context_percent {
-                instance.context_percent = Some(cp);
-            }
-            if instance.session_start.is_none() {
-                if let Some((Some(start_ts), _)) = &transcript_data {
-                    instance.session_start = Some(*start_ts);
+            if is_statusline {
+                instance.last_activity = now_secs;
+                if let Some(ref tp) = transcript_path {
+                    if !tp.is_empty() {
+                        instance.transcript_path = Some(tp.clone());
+                    }
                 }
-            }
-            if let Some((_, preview)) = &transcript_data {
-                if !preview.is_empty() {
-                    instance.conversation_log = preview.clone();
+                if let Some(ref sn) = event.session_name {
+                    if !sn.is_empty() {
+                        instance.session_name = Some(sn.clone());
+                    }
                 }
+                if let Some(ref m) = event.model {
+                    if !m.is_empty() {
+                        instance.model = Some(m.clone());
+                    }
+                }
+                if let Some(cp) = event.context_percent {
+                    instance.context_percent = Some(cp);
+                }
+                if instance.session_start.is_none() {
+                    if let Some((Some(start_ts), _)) = &transcript_data {
+                        instance.session_start = Some(*start_ts);
+                    }
+                }
+                if let Some((_, preview)) = &transcript_data {
+                    if !preview.is_empty() {
+                        instance.conversation_log = preview.clone();
+                    }
+                }
+                return;
             }
-            return;
-        }
 
-        let new_status = match event.event.as_str() {
-            "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PostToolUseFailure" => {
-                "executing"
-            }
-            _ => "waiting",
-        };
-        instance.status = new_status.to_string();
+            let new_status = match event.event.as_str() {
+                "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PostToolUseFailure" => {
+                    "executing"
+                }
+                _ => "waiting",
+            };
+            instance.status = new_status.to_string();
         instance.last_activity = now_secs;
         instance.last_hook_event = Some(event.clone());
         if let Some(ref pm) = event.permission_mode {
@@ -1106,8 +1103,9 @@ fn update_instance_from_hook(
                 permission_mode: event.permission_mode.clone(),
                 context_percent: event.context_percent,
                 conversation_log: Vec::new(),
-                    session_start: None,
+                session_start: None,
                 transcript_path: None,
+                session_name: None,
             },
         );
     }
@@ -1146,6 +1144,7 @@ fn start_state_monitor(
                     merged.conversation_log = existing.conversation_log.clone();
                     merged.session_start = existing.session_start;
                     merged.transcript_path = existing.transcript_path.clone();
+                    merged.session_name = existing.session_name.clone();
                 }
                 new_map.insert(id.clone(), merged);
                 notified_map.remove(&id);
@@ -1167,6 +1166,9 @@ fn start_state_monitor(
                             }
                             if inst.transcript_path.is_some() {
                                 disc.transcript_path.clone_from(&inst.transcript_path);
+                            }
+                            if inst.session_name.is_some() {
+                                disc.session_name.clone_from(&inst.session_name);
                             }
                             if inst.last_hook_event.is_some() {
                                 disc.last_hook_event.clone_from(&inst.last_hook_event);

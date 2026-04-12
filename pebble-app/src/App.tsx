@@ -44,6 +44,8 @@ interface Instance {
   context_percent?: number;
   conversation_log?: string[];
   session_start?: number;
+  transcript_path?: string;
+  session_name?: string;
 }
 
 const FILLET_R = 12;
@@ -60,6 +62,25 @@ function formatTimeAgo(ts: number): string {
   if (diff < 3600) return `${Math.floor(diff / 60)}m`;
   if (diff < 86400) return `${Math.floor(diff / 3600)}h`;
   return `${Math.floor(diff / 86400)}d`;
+}
+
+function getSessionName(inst: Instance): string {
+  if (inst.session_name) {
+    return inst.session_name;
+  }
+  if (inst.transcript_path) {
+    const parts = inst.transcript_path.split(/[/\\]/);
+    const idx = parts.indexOf("transcripts");
+    if (idx >= 0 && idx + 1 < parts.length) {
+      return parts[idx + 1];
+    }
+    const fileName = parts[parts.length - 1] || "";
+    const slug = fileName.replace(/\.jsonl?$/, "");
+    if (slug && slug.length > 0) {
+      return slug;
+    }
+  }
+  return inst.working_directory.split(/[/\\]/).pop() || inst.working_directory;
 }
 
 function formatDuration(startTs: number): string {
@@ -112,22 +133,94 @@ function StatusDot({ status }: { status: string }) {
   return <span className={`status-dot status-dot--${status}`} />;
 }
 
-function MiniPet({ status }: { status: string }) {
-  let mod = "";
-  if (status === "needs_permission") mod = "mini-pet--alert";
-  else if (["waiting", "executing", "completed"].includes(status)) mod = `mini-pet--${status}`;
+function PixelGrid({
+  pixels,
+  color,
+  size = 2,
+  chars,
+}: {
+  pixels: string[];
+  color: string;
+  size?: number;
+  chars?: string;
+}) {
+  const w = pixels[0]?.length ?? 0;
+  const h = pixels.length;
   return (
-    <div className={`mini-pet ${mod}`}>
-      <div className="mini-pet-body">
-        <div className="mini-pet-face">
-          <div className="mini-pet-eye mini-pet-eye--left" />
-          <div className="mini-pet-eye mini-pet-eye--right" />
+    <svg width={w * size} height={h * size} style={{ display: "block" }}>
+      {pixels.map((row, y) =>
+        row.split("").map((char, x) => {
+          if (char === " " || char === ".") return null;
+          if (chars && !chars.includes(char)) return null;
+          return <rect key={`${x}-${y}`} x={x * size} y={y * size} width={size} height={size} fill={color} />;
+        })
+      )}
+    </svg>
+  );
+}
+
+const CAPY_SM = [
+  "  ee    ee  ",
+  " bbbbbbbbbb ",
+  "bo bbbbbb ob",
+  "bbbbbbbbbbbb",
+  "bbbbbbbbbbbb",
+  " bbbbbbbbbb ",
+  "  bbbbbbbb  ",
+  " l l ll l l ",
+];
+
+const CAPY_MD = [
+  "  ee    ee  ",
+  " bbbbbbbbbb ",
+  "bo bbbbbb ob",
+  "bbbbbbbbbbbb",
+  "bbbbbbbbbbbb",
+  "bbbbbbbbbbbb",
+  " bbbbbbbbbb ",
+  "  bbbbbbbb  ",
+  " l l ll l l ",
+  " l l ll l l ",
+];
+
+
+function CapyPixel({ status, size }: { status: string; size: "sm" | "md" }) {
+  const isAlert = status === "needs_permission";
+  const isExecuting = status === "executing";
+  const isCompleted = status === "completed";
+
+  const wrapClass =
+    `capy-wrap capy-wrap--${size} ` +
+    (isAlert ? "capy-wrap--alert" : isExecuting ? "capy-wrap--executing" : isCompleted ? "capy-wrap--completed" : "capy-wrap--waiting");
+
+  const pixels = size === "sm" ? CAPY_SM : CAPY_MD;
+  const pixelSize = 2;
+
+  const w = (pixels[0]?.length ?? 0) * pixelSize;
+  const h = pixels.length * pixelSize;
+
+  return (
+    <div className={wrapClass}>
+      <div className="capy-sprite" style={{ width: w, height: h, position: "relative" }}>
+        <div className="capy-layer capy-body">
+          <PixelGrid pixels={pixels} color="currentColor" size={pixelSize} chars="b" />
         </div>
-        <div className="mini-pet-blush mini-pet-blush--left" />
-        <div className="mini-pet-blush mini-pet-blush--right" />
+        <div className="capy-layer capy-ears">
+          <PixelGrid pixels={pixels} color="currentColor" size={pixelSize} chars="e" />
+        </div>
+        <div className="capy-layer capy-eyes">
+          <PixelGrid pixels={pixels} color="#1a1625" size={pixelSize} chars="o" />
+        </div>
+        <div className="capy-layer capy-legs">
+          <PixelGrid pixels={pixels} color="currentColor" size={pixelSize} chars="l" />
+        </div>
       </div>
     </div>
   );
+}
+
+function MiniPet({ status }: { status: string }) {
+  return <CapyPixel status={status} size="md" />;
 }
 
 function InstanceCard({
@@ -154,7 +247,7 @@ function InstanceCard({
     return "No recent activity";
   }, [inst]);
 
-  const dirName = inst.working_directory.split("/").pop() || inst.working_directory;
+  const sessionName = getSessionName(inst);
   const runtime = inst.session_start != null ? formatDuration(inst.session_start) : formatTimeAgo(inst.last_activity);
 
   const handleRespond = async (choice: string) => {
@@ -174,7 +267,7 @@ function InstanceCard({
         <div className="instance-content">
           <div className="instance-title-row">
             <span className="instance-dir" title={inst.working_directory}>
-              {dirName}
+              {sessionName}
             </span>
             <div className="instance-badges">
               <span className="badge badge--agent">{inst.model || "Claude"}</span>
@@ -184,7 +277,6 @@ function InstanceCard({
               {inst.permission_mode && (
                 <span className="badge badge--mode">{inst.permission_mode}</span>
               )}
-              <span className="badge badge--terminal">{inst.terminal_app}</span>
               <span className="badge badge--time">{runtime}</span>
             </div>
           </div>
@@ -249,9 +341,8 @@ function App() {
   const [expanded, setExpanded] = useState(false);
   const [drawerVisible, setDrawerVisible] = useState(false);
   const collapseTimer = useRef<number | null>(null);
-  const expandTimer = useRef<number | null>(null);
   const resizeDebounceTimer = useRef<number | null>(null);
-  const wasExpandedRef = useRef(false);
+  const prevExpandedRef = useRef(false);
 
   useEffect(() => {
     const load = async () => {
@@ -267,13 +358,16 @@ function App() {
     const interval = setInterval(load, 2000);
 
     let unlisten: (() => void) | undefined;
+    let mounted = true;
     (async () => {
       unlisten = await listen<Instance[]>("instances-updated", (e) => {
+        if (!mounted) return;
         setInstances(e.payload);
       });
     })();
 
     return () => {
+      mounted = false;
       clearInterval(interval);
       if (unlisten) unlisten();
     };
@@ -284,8 +378,10 @@ function App() {
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
+    let mounted = true;
     (async () => {
       unlisten = await listen<boolean>("pebble-hover", (e) => {
+        if (!mounted) return;
         if (e.payload) {
           expandPanelRef.current();
         } else {
@@ -294,6 +390,7 @@ function App() {
       });
     })();
     return () => {
+      mounted = false;
       if (unlisten) unlisten();
     };
   }, []);
@@ -307,21 +404,22 @@ function App() {
   const executingCount = realInstances.filter((i) => i.status === "executing").length;
   const permissionCount = realInstances.filter((i) => i.status === "needs_permission").length;
   const petMod = useMemo(() => {
-    if (permissionCount > 0) return "pet--alert";
-    if (executingCount > 0) return "pet--executing";
-    if (realInstances.some((i) => i.status === "waiting")) return "pet--waiting";
-    if (realInstances.some((i) => i.status === "completed")) return "pet--completed";
-    return "";
+    if (permissionCount > 0) return "needs_permission";
+    if (executingCount > 0) return "executing";
+    if (realInstances.some((i) => i.status === "waiting")) return "waiting";
+    if (realInstances.some((i) => i.status === "completed")) return "completed";
+    return "waiting";
   }, [permissionCount, executingCount, realInstances]);
 
   const instancesRef = useRef<HTMLDivElement>(null);
   const innerRef = useRef<HTMLDivElement>(null);
   const [desiredBodyH, setDesiredBodyH] = useState(COLLAPSED_H - FILLET_R);
+  const lastHeightRef = useRef<number | null>(null);
 
   useLayoutEffect(() => {
     if (!expanded || !drawerVisible) return;
-    const isFirstExpand = expanded && !wasExpandedRef.current;
-    wasExpandedRef.current = expanded;
+    const isFirstExpand = expanded && !prevExpandedRef.current;
+    prevExpandedRef.current = expanded;
 
     const doResize = () => {
       const headerH = 38;
@@ -329,8 +427,11 @@ function App() {
       const contentHeight = innerRef.current?.offsetHeight ?? 0;
       const contentH = contentHeight + headerH + paddingB;
       const h = Math.min(Math.max(contentH, COLLAPSED_H - FILLET_R), MAX_EXPANDED_BODY_H);
-      setDesiredBodyH(h);
-      invoke("resize_window_centered", { width: EXPANDED_W, height: h + FILLET_R, animate: false }).catch(console.error);
+      if (lastHeightRef.current !== h) {
+        lastHeightRef.current = h;
+        setDesiredBodyH(h);
+        invoke("resize_window_centered", { width: EXPANDED_W, height: h + FILLET_R, animate: false }).catch(console.error);
+      }
     };
 
     if (isFirstExpand) {
@@ -338,6 +439,7 @@ function App() {
         window.clearTimeout(resizeDebounceTimer.current);
         resizeDebounceTimer.current = null;
       }
+      lastHeightRef.current = null;
       requestAnimationFrame(() => doResize());
     } else {
       if (resizeDebounceTimer.current) {
@@ -348,13 +450,25 @@ function App() {
         resizeDebounceTimer.current = null;
       }, 50);
     }
+  }, [expanded, drawerVisible, realInstances]);
 
+  useEffect(() => {
+    if (!expanded || !drawerVisible) return;
     const ro = new ResizeObserver(() => {
       if (resizeDebounceTimer.current) {
         window.clearTimeout(resizeDebounceTimer.current);
       }
       resizeDebounceTimer.current = window.setTimeout(() => {
-        doResize();
+        const headerH = 38;
+        const paddingB = 12;
+        const contentHeight = innerRef.current?.offsetHeight ?? 0;
+        const contentH = contentHeight + headerH + paddingB;
+        const h = Math.min(Math.max(contentH, COLLAPSED_H - FILLET_R), MAX_EXPANDED_BODY_H);
+        if (lastHeightRef.current !== h) {
+          lastHeightRef.current = h;
+          setDesiredBodyH(h);
+          invoke("resize_window_centered", { width: EXPANDED_W, height: h + FILLET_R, animate: false }).catch(console.error);
+        }
         resizeDebounceTimer.current = null;
       }, 50);
     });
@@ -368,7 +482,7 @@ function App() {
         resizeDebounceTimer.current = null;
       }
     };
-  }, [expanded, drawerVisible, realInstances]);
+  }, [expanded, drawerVisible]);
 
   const expandPanel = () => {
     if (collapseTimer.current) {
@@ -384,17 +498,14 @@ function App() {
   };
 
   const collapsePanel = () => {
-    if (expandTimer.current) {
-      window.clearTimeout(expandTimer.current);
-      expandTimer.current = null;
-    }
     setDrawerVisible(false);
     if (collapseTimer.current) {
       window.clearTimeout(collapseTimer.current);
     }
     collapseTimer.current = window.setTimeout(() => {
       setExpanded(false);
-      wasExpandedRef.current = false;
+      prevExpandedRef.current = false;
+      lastHeightRef.current = null;
       invoke("resize_window_centered", { width: COLLAPSED_W, height: COLLAPSED_H, animate: false }).catch(console.error);
       collapseTimer.current = null;
     }, 150);
@@ -445,16 +556,7 @@ function App() {
     >
       <div className="compact-header">
         <div className="wing wing--left">
-          <div className={`pet ${petMod}`}>
-            <div className="pet-body">
-              <div className="pet-face">
-                <div className="pet-eye pet-eye--left" />
-                <div className="pet-eye pet-eye--right" />
-              </div>
-              <div className="pet-blush pet-blush--left" />
-              <div className="pet-blush pet-blush--right" />
-            </div>
-          </div>
+          <CapyPixel status={petMod} size="sm" />
         </div>
         <div className="wing wing--center">
           <span className="brand-text">Pebble</span>
