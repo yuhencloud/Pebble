@@ -26,7 +26,6 @@ interface HookEvent {
   permission_mode?: string;
   tool_use_id?: string;
   model?: string;
-  context_percent?: number;
 }
 
 interface Instance {
@@ -41,7 +40,6 @@ interface Instance {
   subagents: SubagentInfo[];
   model?: string;
   permission_mode?: string;
-  context_percent?: number;
   conversation_log?: string[];
   session_start?: number;
   transcript_path?: string;
@@ -271,9 +269,6 @@ function InstanceCard({
             </span>
             <div className="instance-badges">
               <span className="badge badge--agent">{inst.model || "Claude"}</span>
-              {inst.context_percent != null && (
-                <span className="badge badge--context">{inst.context_percent}%</span>
-              )}
               {inst.permission_mode && (
                 <span className="badge badge--mode">{inst.permission_mode}</span>
               )}
