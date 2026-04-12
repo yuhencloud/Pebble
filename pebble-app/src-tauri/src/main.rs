@@ -4,6 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 mod types;
+mod platform;
 use types::{AppState, HookEvent, IncomingHookPayload, Instance, PendingPermission, SubagentInfo};
 use std::collections::HashMap;
 use std::fs;
@@ -447,113 +448,86 @@ fn parse_permission_choices(lines: &[String]) -> Option<PendingPermission> {
 fn discover_instances() -> HashMap<String, Instance> {
     let mut map = HashMap::new();
 
-    let output = Command::new("ps")
+    let all = platform::discovery::list_processes();
+    let claudes = platform::discovery::find_claude_processes();
+
+    let mut claude_pids = std::collections::HashSet::new();
+    for p in &all {
+        let is_claude_main = p.comm == "claude" || p.comm == "claude-code";
+        let is_node_claude = p.comm == "node" && p.args.contains("claude-code");
+        if is_claude_main || is_node_claude {
+            claude_pids.insert(p.pid);
+        }
+    }
+
+    let mut children: HashMap<u32, Vec<(u32, String, String)>> = HashMap::new();
+    for p in &all {
+        if claude_pids.contains(&p.pid) && claude_pids.contains(&p.ppid) && p.pid != p.ppid {
+            children.entry(p.ppid).or_default().push((p.pid, p.comm.clone(), p.args.clone()));
+        }
+    }
+
+    fn collect_subagents(
+        pid: u32,
+        children: &HashMap<u32, Vec<(u32, String, String)>>,
+        depth: usize,
+    ) -> Vec<SubagentInfo> {
+        if depth >= 5 {
+            return Vec::new();
+        }
+        let mut result = Vec::new();
+        if let Some(kids) = children.get(&pid) {
+            for (cid, comm, args) in kids {
+                let name = args.split_whitespace().next().unwrap_or(comm).to_string();
+                result.push(SubagentInfo {
+                    id: format!("cc-{}", cid),
+                    status: "executing".to_string(),
+                    name,
+                });
+                result.extend(collect_subagents(*cid, children, depth + 1));
+            }
+        }
+        result
+    }
+
+    let ps_output = Command::new("ps")
         .args(&["-eo", "pid,ppid,comm,args"])
-        .output();
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
 
-    if let Ok(output) = output {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let mut processes: Vec<(u32, u32, String, String)> = Vec::new();
-        let mut claude_pids = std::collections::HashSet::new();
+    for p in claudes {
+        let cwd = get_process_cwd(p.pid).unwrap_or_else(|| "Unknown".to_string());
+        let terminal = detect_terminal_app(p.pid, &ps_output);
+        let id = format!("cc-{}", p.pid);
+        let subagents = collect_subagents(p.pid, &children, 0);
 
-        // First pass: collect processes and identify claude processes
-        for line in stdout.lines() {
-            if line.contains("grep") || line.contains("Pebble") {
-                continue;
-            }
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() < 4 {
-                continue;
-            }
-            let pid = parts[0].parse::<u32>().unwrap_or(0);
-            let ppid = parts[1].parse::<u32>().unwrap_or(0);
-            let comm = parts[2].to_string();
-            let args = parts[3..].join(" ");
-            if pid == 0 {
-                continue;
-            }
-            let is_claude_main = comm == "claude" || comm == "claude-code";
-            let is_node_claude = comm == "node" && args.contains("claude-code");
-            if is_claude_main || is_node_claude {
-                claude_pids.insert(pid);
-            }
-            processes.push((pid, ppid, comm, args));
-        }
-
-        // Build adjacency list: parent -> children (only claude-like children)
-        let mut children: HashMap<u32, Vec<(u32, String, String)>> = HashMap::new();
-        for (pid, ppid, comm, args) in &processes {
-            if claude_pids.contains(pid) && claude_pids.contains(ppid) && *pid != *ppid {
-                children.entry(*ppid).or_default().push((*pid, comm.clone(), args.clone()));
-            }
-        }
-
-        // Recursively collect all nested descendants
-        fn collect_subagents(
-            pid: u32,
-            children: &HashMap<u32, Vec<(u32, String, String)>>,
-            depth: usize,
-        ) -> Vec<SubagentInfo> {
-            if depth >= 5 {
-                return Vec::new();
-            }
-            let mut result = Vec::new();
-            if let Some(kids) = children.get(&pid) {
-                for (cid, comm, args) in kids {
-                    let name = args.split_whitespace().next().unwrap_or(comm).to_string();
-                    result.push(SubagentInfo {
-                        id: format!("cc-{}", cid),
-                        status: "executing".to_string(),
-                        name,
-                    });
-                    result.extend(collect_subagents(*cid, children, depth + 1));
-                }
-            }
-            result
-        }
-
-        // Second pass: create top-level instances (skip those that are children of another claude)
-        for (pid, ppid, comm, args) in &processes {
-            let is_claude_main = comm == "claude" || comm == "claude-code";
-            let is_node_claude = comm == "node" && args.contains("claude-code");
-            if !is_claude_main && !is_node_claude {
-                continue;
-            }
-            if claude_pids.contains(ppid) && *ppid != *pid {
-                continue;
-            }
-            let cwd = get_process_cwd(*pid).unwrap_or_else(|| "Unknown".to_string());
-            let terminal = detect_terminal_app(*pid, &stdout);
-            let id = format!("cc-{}", pid);
-            let subagents = collect_subagents(*pid, &children, 0);
-
-            map.insert(
-                id.clone(),
-                Instance {
-                    id,
-                    pid: *pid,
-                    status: "waiting".to_string(),
-                    working_directory: cwd,
-                    terminal_app: terminal,
-                    last_activity: 0,
-                    pending_permission: None,
-                    last_hook_event: None,
-                    subagents,
-                    model: None,
-                    permission_mode: None,
-                    context_percent: None,
-                    conversation_log: Vec::new(),
-                    session_start: None,
-                    transcript_path: None,
-                    session_name: None,
-                },
-            );
-        }
+        map.insert(
+            id.clone(),
+            Instance {
+                id,
+                pid: p.pid,
+                status: "waiting".to_string(),
+                working_directory: cwd,
+                terminal_app: terminal,
+                last_activity: 0,
+                pending_permission: None,
+                last_hook_event: None,
+                subagents,
+                model: None,
+                permission_mode: None,
+                context_percent: None,
+                conversation_log: Vec::new(),
+                session_start: None,
+                transcript_path: None,
+                session_name: None,
+            },
+        );
     }
 
     map
 }
-
 fn get_process_cwd(pid: u32) -> Option<String> {
     let output = Command::new("lsof")
         .args(&["-a", "-d", "cwd", "-p", &pid.to_string(), "-Fn"])
