@@ -1,3 +1,5 @@
+pebble-app/src-tauri/gen/
+
 # Dependencies
 node_modules/
 .pnp

@@ -8,7 +8,8 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use parking_lot::Mutex;
 use std::thread;
 use std::time::Duration;
 use tauri::{Emitter, Manager, State};
@@ -37,6 +38,13 @@ struct PendingPermission {
 }
 
 #[derive(Serialize, Clone, Debug)]
+struct SubagentInfo {
+    id: String,
+    status: String,
+    name: String,
+}
+
+#[derive(Serialize, Clone, Debug)]
 struct Instance {
     id: String,
     pid: u32,
@@ -48,6 +56,20 @@ struct Instance {
     pending_permission: Option<PendingPermission>,
     #[serde(skip_serializing_if = "Option::is_none")]
     last_hook_event: Option<HookEvent>,
+    #[serde(default)]
+    subagents: Vec<SubagentInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    permission_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context_percent: Option<u8>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    conversation_log: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_start: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transcript_path: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -63,27 +85,66 @@ struct HookEvent {
     permission_mode: Option<String>,
     #[serde(default, rename = "tool_use_id")]
     tool_use_id: Option<String>,
+    #[serde(default, rename = "model")]
+    model: Option<String>,
+    #[serde(default, rename = "context_percent")]
+    context_percent: Option<u8>,
+}
+
+#[derive(Deserialize, Debug)]
+struct IncomingHookPayload {
+    event: String,
+    cwd: String,
+    timestamp: u64,
+    #[serde(default)]
+    tool_name: Option<String>,
+    #[serde(default, rename = "tool_input")]
+    tool_input: Option<serde_json::Value>,
+    #[serde(default, rename = "permission_mode")]
+    permission_mode: Option<String>,
+    #[serde(default, rename = "tool_use_id")]
+    tool_use_id: Option<String>,
+    #[serde(default, rename = "model")]
+    raw_model: Option<serde_json::Value>,
+    #[serde(default, rename = "context_percent")]
+    context_percent: Option<u8>,
+    #[serde(default, rename = "context_window")]
+    context_window: Option<serde_json::Value>,
+    #[serde(default, rename = "transcript_path")]
+    transcript_path: Option<String>,
+    #[serde(default, rename = "sender_pid")]
+    sender_pid: Option<u32>,
 }
 
 struct AppState {
     instances: Arc<Mutex<HashMap<String, Instance>>>,
 }
 
-#[tauri::command]
-fn get_instances(state: State<'_, AppState>) -> Vec<Instance> {
-    let map = state.instances.lock().unwrap();
-    let mut list: Vec<Instance> = map
-        .values()
-        .filter(|i| i.pid != 0)
+fn is_related_cwd(a: &str, b: &str) -> bool {
+    let a = std::path::Path::new(a);
+    let b = std::path::Path::new(b);
+    a == b || a.starts_with(b) || b.starts_with(a)
+}
+
+fn build_grouped_instances(map: &HashMap<String, Instance>) -> Vec<Instance> {
+    let mut result: Vec<Instance> = map.values()
+        .filter(|i| i.pid != 0 || (i.last_activity > 0 && i.last_hook_event.is_some()))
         .cloned()
         .collect();
-    list.sort_by(|a, b| a.working_directory.cmp(&b.working_directory));
-    list
+    result.sort_by(|a, b| a.working_directory.cmp(&b.working_directory)
+        .then_with(|| b.last_activity.cmp(&a.last_activity)));
+    result
+}
+
+#[tauri::command]
+fn get_instances(state: State<'_, AppState>) -> Vec<Instance> {
+    let map = state.instances.lock();
+    build_grouped_instances(&map)
 }
 
 #[tauri::command]
 fn jump_to_terminal(instance_id: String, state: State<'_, AppState>) -> Result<(), String> {
-    let map = state.instances.lock().unwrap();
+    let map = state.instances.lock();
     let instance = map
         .values()
         .find(|i| i.id == instance_id)
@@ -108,7 +169,7 @@ fn respond_permission(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let instance = {
-        let map = state.instances.lock().unwrap();
+        let map = state.instances.lock();
         map.values()
             .find(|i| i.id == instance_id)
             .cloned()
@@ -141,7 +202,7 @@ fn respond_permission(
         return Err("Permission response only supported for iTerm2".to_string());
     }
 
-    let mut map = state.instances.lock().unwrap();
+    let mut map = state.instances.lock();
     if let Some(inst) = map.values_mut().find(|i| i.id == instance_id) {
         inst.status = "executing".to_string();
         inst.pending_permission = None;
@@ -162,8 +223,10 @@ fn resize_window_centered(
         unsafe {
             if let Ok(raw) = window.ns_window() {
                 let ns_window: id = raw as id;
-                let screen_cls = class!(NSScreen);
-                let screen: id = msg_send![screen_cls, mainScreen];
+                let screen: id = msg_send![ns_window, screen];
+                if screen.is_null() {
+                    return Err("Window has no screen".to_string());
+                }
                 let frame: NSRect = msg_send![screen, frame];
                 let x = frame.size.width / 2.0 - width / 2.0;
                 let y = frame.size.height - height;
@@ -189,78 +252,82 @@ fn resize_window_centered(
 
 #[tauri::command]
 fn get_instance_preview(instance_id: String, state: State<'_, AppState>) -> Result<String, String> {
-    let map = state.instances.lock().unwrap();
-    let instance = map
-        .values()
-        .find(|i| i.id == instance_id)
-        .cloned()
-        .ok_or("Instance not found")?;
+    {
+        let map = state.instances.lock();
+        let instance = map
+            .values()
+            .find(|i| i.id == instance_id)
+            .cloned()
+            .ok_or("Instance not found")?;
 
-    // Primary: use hook event if available
-    if let Some(ref hook) = instance.last_hook_event {
-        let preview = format_hook_preview(hook);
-        if !preview.is_empty() {
-            return Ok(preview);
+        // Primary: use conversation log if available
+        if !instance.conversation_log.is_empty() {
+            let start = instance.conversation_log.len().saturating_sub(3);
+            let lines = instance.conversation_log[start..].join("\n");
+            return Ok(lines);
         }
     }
 
-    // Fallback: read from iTerm2 if applicable
-    if instance.terminal_app == "iTerm2" {
-        if let Some(tty) = get_process_tty(instance.pid) {
-            let lines = read_iterm2_last_lines(&tty, 3);
-            let filtered: Vec<String> = lines
-                .into_iter()
-                .map(|s| s.trim().to_string())
-                .filter(|s| {
-                    !s.is_empty()
-                        && !s.starts_with('$')
-                        && !s.starts_with('#')
-                        && !s.starts_with('>')
-                        && !s.starts_with('%')
-                        && !s.starts_with("$")
-                        && !s.starts_with("❯")
-                        && !s.starts_with("●")
-                })
-                .collect();
-            if let Some(last) = filtered.last() {
-                return Ok(last.clone());
+    // Fallback: read from iTerm2 if applicable, and try to parse badges
+    {
+        let mut map = state.instances.lock();
+        let instance = map
+            .values_mut()
+            .find(|i| i.id == instance_id)
+            .ok_or("Instance not found")?;
+
+        if instance.terminal_app == "iTerm2" {
+            if let Some(tty) = get_process_tty(instance.pid) {
+                let lines = read_iterm2_last_lines(&tty, 8);
+                let filtered: Vec<String> = lines
+                    .into_iter()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| {
+                        !s.is_empty()
+                            && !s.starts_with('$')
+                            && !s.starts_with('#')
+                            && !s.starts_with('>')
+                            && !s.starts_with('%')
+                            && !s.starts_with("$")
+                            && !s.starts_with("❯")
+                            && !s.starts_with("●")
+                    })
+                    .collect();
+
+                // Try to parse context_percent and model from terminal text
+                for line in &filtered {
+                    if instance.context_percent.is_none() {
+                        if let Some(start) = line.find("Context:") {
+                            let rest = &line[start + 8..];
+                            if let Some(end) = rest.find('%') {
+                                if let Ok(pct) = rest[..end].trim().parse::<u8>() {
+                                    instance.context_percent = Some(pct);
+                                }
+                            }
+                        }
+                    }
+                    if instance.model.is_none() {
+                        for m in ["claude-opus", "claude-sonnet", "claude-haiku"] {
+                            if line.to_lowercase().contains(m) {
+                                let simple = m.replace("claude-", "");
+                                instance.model = Some(simple.to_string());
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if filtered.len() >= 2 {
+                    let start = filtered.len().saturating_sub(3);
+                    return Ok(filtered[start..].join("\n"));
+                } else if let Some(last) = filtered.last() {
+                    return Ok(last.clone());
+                }
             }
         }
     }
 
     Ok("No recent activity".to_string())
-}
-
-fn format_hook_preview(hook: &HookEvent) -> String {
-    match hook.event.as_str() {
-        "UserPromptSubmit" => {
-            if let Some(ref input) = hook.tool_input {
-                let text = input.to_string();
-                let truncated = if text.len() > 80 {
-                    format!("{}...", &text[..80])
-                } else {
-                    text
-                };
-                format!("You: {}", truncated)
-            } else {
-                "You: ...".to_string()
-            }
-        }
-        "PreToolUse" => {
-            let tool = hook.tool_name.as_deref().unwrap_or("Tool");
-            format!("Using {}", tool)
-        }
-        "PostToolUse" => {
-            let tool = hook.tool_name.as_deref().unwrap_or("Tool");
-            format!("{} completed", tool)
-        }
-        "PostToolUseFailure" => {
-            let tool = hook.tool_name.as_deref().unwrap_or("Tool");
-            format!("{} failed", tool)
-        }
-        "Stop" => "Stopped".to_string(),
-        _ => "".to_string(),
-    }
 }
 
 fn get_process_tty(pid: u32) -> Option<String> {
@@ -486,7 +553,7 @@ fn parse_permission_choices(lines: &[String]) -> Option<PendingPermission> {
         }
     }
 
-    if choices.is_empty() {
+    if choices.len() < 2 {
         None
     } else {
         Some(PendingPermission {
@@ -499,32 +566,6 @@ fn parse_permission_choices(lines: &[String]) -> Option<PendingPermission> {
     }
 }
 
-fn default_choices_for_tool(tool_name: &str) -> Vec<String> {
-    match tool_name {
-        "Bash" => vec![
-            "Yes".to_string(),
-            "No".to_string(),
-            "Always allow Bash".to_string(),
-        ],
-        "Edit" => vec![
-            "Yes".to_string(),
-            "No".to_string(),
-            "Always allow Edit".to_string(),
-        ],
-        "Write" => vec![
-            "Yes".to_string(),
-            "No".to_string(),
-            "Always allow Write".to_string(),
-        ],
-        "Read" => vec![
-            "Yes".to_string(),
-            "No".to_string(),
-            "Always allow Read".to_string(),
-        ],
-        _ => vec!["Yes".to_string(), "No".to_string()],
-    }
-}
-
 fn discover_instances() -> HashMap<String, Instance> {
     let mut map = HashMap::new();
 
@@ -534,6 +575,10 @@ fn discover_instances() -> HashMap<String, Instance> {
 
     if let Ok(output) = output {
         let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut processes: Vec<(u32, u32, String, String)> = Vec::new();
+        let mut claude_pids = std::collections::HashSet::new();
+
+        // First pass: collect processes and identify claude processes
         for line in stdout.lines() {
             if line.contains("grep") || line.contains("Pebble") {
                 continue;
@@ -542,32 +587,86 @@ fn discover_instances() -> HashMap<String, Instance> {
             if parts.len() < 4 {
                 continue;
             }
-            let comm = parts[2];
+            let pid = parts[0].parse::<u32>().unwrap_or(0);
+            let ppid = parts[1].parse::<u32>().unwrap_or(0);
+            let comm = parts[2].to_string();
             let args = parts[3..].join(" ");
+            if pid == 0 {
+                continue;
+            }
+            let is_claude_main = comm == "claude" || comm == "claude-code";
+            let is_node_claude = comm == "node" && args.contains("claude-code");
+            if is_claude_main || is_node_claude {
+                claude_pids.insert(pid);
+            }
+            processes.push((pid, ppid, comm, args));
+        }
+
+        // Build adjacency list: parent -> children (only claude-like children)
+        let mut children: HashMap<u32, Vec<(u32, String, String)>> = HashMap::new();
+        for (pid, ppid, comm, args) in &processes {
+            if claude_pids.contains(pid) && claude_pids.contains(ppid) && *pid != *ppid {
+                children.entry(*ppid).or_default().push((*pid, comm.clone(), args.clone()));
+            }
+        }
+
+        // Recursively collect all nested descendants
+        fn collect_subagents(
+            pid: u32,
+            children: &HashMap<u32, Vec<(u32, String, String)>>,
+            depth: usize,
+        ) -> Vec<SubagentInfo> {
+            if depth >= 5 {
+                return Vec::new();
+            }
+            let mut result = Vec::new();
+            if let Some(kids) = children.get(&pid) {
+                for (cid, comm, args) in kids {
+                    let name = args.split_whitespace().next().unwrap_or(comm).to_string();
+                    result.push(SubagentInfo {
+                        id: format!("cc-{}", cid),
+                        status: "executing".to_string(),
+                        name,
+                    });
+                    result.extend(collect_subagents(*cid, children, depth + 1));
+                }
+            }
+            result
+        }
+
+        // Second pass: create top-level instances (skip those that are children of another claude)
+        for (pid, ppid, comm, args) in &processes {
             let is_claude_main = comm == "claude" || comm == "claude-code";
             let is_node_claude = comm == "node" && args.contains("claude-code");
             if !is_claude_main && !is_node_claude {
                 continue;
             }
-            let pid = parts[0].parse::<u32>().unwrap_or(0);
-            if pid == 0 {
+            if claude_pids.contains(ppid) && *ppid != *pid {
                 continue;
             }
-            let cwd = get_process_cwd(pid).unwrap_or_else(|| "Unknown".to_string());
-            let terminal = detect_terminal_app(pid, &stdout);
+            let cwd = get_process_cwd(*pid).unwrap_or_else(|| "Unknown".to_string());
+            let terminal = detect_terminal_app(*pid, &stdout);
             let id = format!("cc-{}", pid);
+            let subagents = collect_subagents(*pid, &children, 0);
 
             map.insert(
                 id.clone(),
                 Instance {
                     id,
-                    pid,
+                    pid: *pid,
                     status: "waiting".to_string(),
                     working_directory: cwd,
                     terminal_app: terminal,
                     last_activity: 0,
                     pending_permission: None,
                     last_hook_event: None,
+                    subagents,
+                    model: None,
+                    permission_mode: None,
+                    context_percent: None,
+                    conversation_log: Vec::new(),
+                    session_start: None,
+                    transcript_path: None,
                 },
             );
         }
@@ -630,6 +729,152 @@ fn detect_terminal_app(pid: u32, ps_output: &str) -> String {
     "Unknown".to_string()
 }
 
+fn extract_model_string(val: &Option<serde_json::Value>) -> Option<String> {
+    val.as_ref().and_then(|v| {
+        if let Some(s) = v.as_str() {
+            Some(s.to_string())
+        } else if let Some(obj) = v.as_object() {
+            obj.get("display_name")
+                .and_then(|n| n.as_str().map(|s| s.to_string()))
+                .or_else(|| obj.get("id").and_then(|n| n.as_str().map(|s| s.to_string())))
+        } else {
+            None
+        }
+    })
+}
+
+fn extract_context_percent_from_payload(
+    ctx: &Option<serde_json::Value>,
+    explicit: Option<u8>,
+) -> Option<u8> {
+    explicit.or_else(|| {
+        ctx.as_ref().and_then(|v| {
+            v.as_object()
+                .and_then(|o| o.get("used_percentage"))
+                .and_then(|p| p.as_f64().map(|n| n.round() as u8))
+        })
+    })
+}
+
+fn extract_preview_text(content: &serde_json::Value, role: &str) -> Option<String> {
+    if let Some(s) = content.as_str() {
+        if s.starts_with("<local-command-caveat>") || s.starts_with("<command-message>") {
+            return None;
+        }
+        return Some(s.to_string());
+    }
+    if let Some(arr) = content.as_array() {
+        for b in arr {
+            if let Some(t) = b.get("text").and_then(|t| t.as_str()) {
+                return Some(t.to_string());
+            }
+        }
+        if role == "assistant" {
+            for b in arr {
+                if b.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                    let name = b.get("name").and_then(|n| n.as_str()).unwrap_or("Tool");
+                    return Some(format!("Using {}", name));
+                }
+            }
+        }
+        if role == "user" {
+            for b in arr {
+                if b.get("type").and_then(|t| t.as_str()) == Some("tool_result") {
+                    if let Some(c) = b.get("content").and_then(|c| c.as_str()) {
+                        let preview = c.trim();
+                        if preview.len() > 50 {
+                            return Some(format!("Result: {}...", &preview[..50]));
+                        }
+                        return Some(format!("Result: {}", preview));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn read_transcript_preview(path: &str, n: usize) -> Vec<String> {
+    use std::fs::File;
+    use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+
+    if n == 0 {
+        return Vec::new();
+    }
+
+    let mut file = match File::open(path) {
+        Ok(f) => f,
+        Err(_) => return Vec::new(),
+    };
+
+    let len = match file.seek(SeekFrom::End(0)) {
+        Ok(l) => l as i64,
+        Err(_) => return Vec::new(),
+    };
+
+    let seek_offset = -(65536.min(len));
+    let _ = file.seek(SeekFrom::End(seek_offset));
+    let mut discard = String::new();
+    let mut reader = BufReader::new(file);
+    let _ = reader.read_line(&mut discard);
+
+    let lines: Vec<String> = reader.lines().filter_map(|l| l.ok()).collect();
+    let mut result = Vec::new();
+
+    for line in lines.iter().rev() {
+        if result.len() >= n {
+            break;
+        }
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
+            let t = json.get("type").and_then(|v| v.as_str());
+            if let Some("user") = t {
+                if let Some(content) = json.get("message").and_then(|m| m.get("content")) {
+                    if let Some(txt) = extract_preview_text(content, "user") {
+                        let trimmed = txt.trim();
+                        if !trimmed.is_empty() {
+                            result.push(format!(
+                                "You: {}",
+                                trimmed.chars().take(80).collect::<String>()
+                            ));
+                        }
+                    }
+                }
+            } else if let Some("assistant") = t {
+                if let Some(content) = json.get("message").and_then(|m| m.get("content")) {
+                    if let Some(txt) = extract_preview_text(content, "assistant") {
+                        let trimmed = txt.trim();
+                        if !trimmed.is_empty() {
+                            result.push(trimmed.chars().take(80).collect::<String>());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    result.reverse();
+    result
+}
+
+fn read_session_start_from_transcript(path: &str) -> Option<u64> {
+    use std::fs::File;
+    use std::io::{BufRead, BufReader};
+
+    let file = File::open(path).ok()?;
+    let reader = BufReader::new(file);
+
+    for line in reader.lines().filter_map(|l| l.ok()) {
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
+            if let Some(ts_str) = json.get("timestamp").and_then(|v| v.as_str()) {
+                if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts_str) {
+                    return Some(dt.timestamp() as u64);
+                }
+            }
+        }
+    }
+    None
+}
+
 fn handle_http_request(mut stream: TcpStream, instances: Arc<Mutex<HashMap<String, Instance>>>) {
     let mut buf = [0u8; 65536];
     if let Ok(n) = stream.read(&mut buf) {
@@ -637,7 +882,7 @@ fn handle_http_request(mut stream: TcpStream, instances: Arc<Mutex<HashMap<Strin
         let first_line = req.lines().next().unwrap_or("");
 
         if first_line.starts_with("GET /instances") {
-            let map = instances.lock().unwrap();
+            let map = instances.lock();
             let mut list: Vec<Instance> = map.values().cloned().collect();
             drop(map);
             list.sort_by(|a, b| a.working_directory.cmp(&b.working_directory));
@@ -651,8 +896,31 @@ fn handle_http_request(mut stream: TcpStream, instances: Arc<Mutex<HashMap<Strin
         } else if first_line.starts_with("POST /hook") {
             if let Some(body_start) = req.find("\r\n\r\n") {
                 let body = &req[body_start + 4..];
-                if let Ok(event) = serde_json::from_str::<HookEvent>(body) {
-                    update_instance_from_hook(instances, &event);
+                if let Ok(payload) = serde_json::from_str::<IncomingHookPayload>(body) {
+                    let model = extract_model_string(&payload.raw_model)
+                        .or_else(|| {
+                            payload.context_window.as_ref().and_then(|cw| {
+                                cw.as_object()
+                                    .and_then(|o| o.get("model"))
+                                    .and_then(|m| extract_model_string(&Some(m.clone())))
+                            })
+                        });
+                    let context_percent = extract_context_percent_from_payload(
+                        &payload.context_window,
+                        payload.context_percent,
+                    );
+                    let event = HookEvent {
+                        event: payload.event,
+                        cwd: payload.cwd,
+                        timestamp: payload.timestamp,
+                        tool_name: payload.tool_name,
+                        tool_input: payload.tool_input,
+                        permission_mode: payload.permission_mode,
+                        tool_use_id: payload.tool_use_id,
+                        model,
+                        context_percent,
+                    };
+                    update_instance_from_hook(instances, &event, payload.transcript_path, payload.sender_pid);
                 }
             }
             let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK");
@@ -683,24 +951,94 @@ fn start_hook_server(instances: Arc<Mutex<HashMap<String, Instance>>>) {
 fn update_instance_from_hook(
     instances: Arc<Mutex<HashMap<String, Instance>>>,
     event: &HookEvent,
+    transcript_path: Option<String>,
+    sender_pid: Option<u32>,
 ) {
+    // Pre-read transcript data before acquiring lock
+    let transcript_data = if event.event == "StatusLine" {
+        transcript_path.as_ref().map(|path| {
+            let session_start = read_session_start_from_transcript(path);
+            let preview = read_transcript_preview(path, 3);
+            (session_start, preview)
+        })
+    } else {
+        None
+    };
+
     let instances_for_scrape = instances.clone();
-    let mut map = instances.lock().unwrap();
+    let mut map = instances.lock();
 
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
 
+    let is_statusline = event.event == "StatusLine";
     let is_permission_event = event.event == "PreToolUse"
         && !matches!(
             event.permission_mode.as_deref(),
             Some("bypassPermissions" | "dontAsk" | "auto" | "acceptEdits")
         );
 
-    let matched = map.values_mut().find(|i| i.working_directory == event.cwd);
+    let mut matched_id: Option<String> = None;
+    if let Some(spid) = sender_pid {
+        let candidate_id = format!("cc-{spid}");
+        if let Some(inst) = map.get(&candidate_id) {
+            if inst.working_directory == event.cwd || is_related_cwd(&inst.working_directory, &event.cwd) {
+                matched_id = Some(candidate_id);
+            }
+        }
+    }
+    if matched_id.is_none() {
+        if let Some(ref tp) = transcript_path {
+            matched_id = map.values().find(|i| i.transcript_path.as_ref() == Some(tp)).map(|i| i.id.clone());
+        }
+    }
+    if matched_id.is_none() {
+        let mut max_la = 0u64;
+        for i in map.values() {
+            if i.working_directory == event.cwd && i.last_activity > max_la {
+                max_la = i.last_activity;
+                matched_id = Some(i.id.clone());
+            }
+        }
+    }
+    if matched_id.is_none() {
+        let mut max_la = 0u64;
+        for i in map.values() {
+            if is_related_cwd(&i.working_directory, &event.cwd) && i.last_activity > max_la {
+                max_la = i.last_activity;
+                matched_id = Some(i.id.clone());
+            }
+        }
+    }
 
-    if let Some(instance) = matched {
+    if let Some(ref id) = matched_id {
+        if let Some(instance) = map.get_mut(id) {
+        if is_statusline {
+            instance.last_activity = now_secs;
+            if let Some(ref tp) = transcript_path {
+                instance.transcript_path = Some(tp.clone());
+            }
+            if let Some(ref m) = event.model {
+                instance.model = Some(m.clone());
+            }
+            if let Some(cp) = event.context_percent {
+                instance.context_percent = Some(cp);
+            }
+            if instance.session_start.is_none() {
+                if let Some((Some(start_ts), _)) = &transcript_data {
+                    instance.session_start = Some(*start_ts);
+                }
+            }
+            if let Some((_, preview)) = &transcript_data {
+                if !preview.is_empty() {
+                    instance.conversation_log = preview.clone();
+                }
+            }
+            return;
+        }
+
         let new_status = match event.event.as_str() {
             "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PostToolUseFailure" => {
                 "executing"
@@ -710,6 +1048,9 @@ fn update_instance_from_hook(
         instance.status = new_status.to_string();
         instance.last_activity = now_secs;
         instance.last_hook_event = Some(event.clone());
+        if let Some(ref pm) = event.permission_mode {
+            instance.permission_mode = Some(pm.clone());
+        }
 
         if is_permission_event {
             let tool_name = event.tool_name.clone().unwrap_or_else(|| "Tool".to_string());
@@ -720,7 +1061,7 @@ fn update_instance_from_hook(
                 thread::sleep(Duration::from_millis(500));
                 let lines = tty.as_ref().map(|t| read_iterm2_last_lines(t, 30)).unwrap_or_default();
                 if let Some(parsed) = parse_permission_choices(&lines) {
-                    let mut map = instances_for_scrape.lock().unwrap();
+                    let mut map = instances_for_scrape.lock();
                     if let Some(inst) = map.get_mut(&id) {
                         inst.status = "needs_permission".to_string();
                         inst.pending_permission = Some(PendingPermission {
@@ -736,7 +1077,8 @@ fn update_instance_from_hook(
         } else {
             instance.pending_permission = None;
         }
-    } else {
+        }
+    } else if !is_statusline {
         let id = format!("cc-{}", event.timestamp);
         let status = if is_permission_event {
             "needs_permission"
@@ -759,6 +1101,13 @@ fn update_instance_from_hook(
                 last_activity: now_secs,
                 pending_permission: None,
                 last_hook_event: Some(event.clone()),
+                subagents: Vec::new(),
+                model: event.model.clone(),
+                permission_mode: event.permission_mode.clone(),
+                context_percent: event.context_percent,
+                conversation_log: Vec::new(),
+                    session_start: None,
+                transcript_path: None,
             },
         );
     }
@@ -774,7 +1123,7 @@ fn start_state_monitor(
         loop {
             thread::sleep(Duration::from_secs(1));
 
-            let mut map = instances.lock().unwrap();
+            let mut map = instances.lock();
             let now_secs = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -790,6 +1139,13 @@ fn start_state_monitor(
                     merged.last_activity = existing.last_activity;
                     merged.pending_permission = existing.pending_permission.clone();
                     merged.last_hook_event = existing.last_hook_event.clone();
+                    merged.subagents = existing.subagents.clone();
+                    merged.model = existing.model.clone();
+                    merged.permission_mode = existing.permission_mode.clone();
+                    merged.context_percent = existing.context_percent;
+                    merged.conversation_log = existing.conversation_log.clone();
+                    merged.session_start = existing.session_start;
+                    merged.transcript_path = existing.transcript_path.clone();
                 }
                 new_map.insert(id.clone(), merged);
                 notified_map.remove(&id);
@@ -797,7 +1153,38 @@ fn start_state_monitor(
 
             for (id, inst) in map.iter() {
                 if !new_map.contains_key(id) && inst.pid == 0 {
-                    if inst.last_activity > 0 && now_secs - inst.last_activity < 60 {
+                    let mut merged = false;
+                    for disc in new_map.values_mut() {
+                        if is_related_cwd(&inst.working_directory, &disc.working_directory) {
+                            if inst.last_activity > disc.last_activity {
+                                disc.last_activity = inst.last_activity;
+                            }
+                            if !inst.conversation_log.is_empty() {
+                                disc.conversation_log.clone_from(&inst.conversation_log);
+                            }
+                            if inst.session_start.is_some() {
+                                disc.session_start = inst.session_start;
+                            }
+                            if inst.transcript_path.is_some() {
+                                disc.transcript_path.clone_from(&inst.transcript_path);
+                            }
+                            if inst.last_hook_event.is_some() {
+                                disc.last_hook_event.clone_from(&inst.last_hook_event);
+                            }
+                            if inst.model.is_some() {
+                                disc.model.clone_from(&inst.model);
+                            }
+                            if inst.permission_mode.is_some() {
+                                disc.permission_mode.clone_from(&inst.permission_mode);
+                            }
+                            if inst.context_percent.is_some() {
+                                disc.context_percent = inst.context_percent;
+                            }
+                            merged = true;
+                            break;
+                        }
+                    }
+                    if !merged && inst.last_activity > 0 && now_secs - inst.last_activity < 60 {
                         new_map.insert(id.clone(), inst.clone());
                     }
                 }
@@ -826,9 +1213,8 @@ fn start_state_monitor(
             }
 
             *map = new_map;
-            let mut list: Vec<Instance> = map.values().cloned().collect();
+            let list = build_grouped_instances(&map);
             drop(map);
-            list.sort_by(|a, b| a.working_directory.cmp(&b.working_directory));
             let _ = app_handle.emit("instances-updated", list);
         }
     });
@@ -841,15 +1227,40 @@ fn ensure_hook_script() -> PathBuf {
 
     let script_content = r#"#!/usr/bin/env node
 import http from "http";
+import { execSync } from "child_process";
+
 const eventType = process.argv[2] || "unknown";
 const cwd = process.cwd();
 const timestamp = Date.now();
+
+function findClaudePid(startPid) {
+  let pid = startPid;
+  while (pid > 1) {
+    try {
+      const comm = execSync(`ps -p ${pid} -o comm=`, { encoding: "utf8" }).trim();
+      if (comm === "claude" || comm === "claude-code") {
+        return pid;
+      }
+      const ppid = parseInt(execSync(`ps -p ${pid} -o ppid=`, { encoding: "utf8" }).trim(), 10);
+      if (ppid === pid || ppid <= 0) break;
+      pid = ppid;
+    } catch (e) {
+      break;
+    }
+  }
+  return null;
+}
+
+const senderPid = findClaudePid(process.ppid);
 
 let stdinData = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", chunk => { stdinData += chunk; });
 process.stdin.on("end", () => {
   let body = { event: eventType, cwd, timestamp };
+  if (senderPid) {
+    body.sender_pid = senderPid;
+  }
   if (stdinData.trim()) {
     try {
       const parsed = JSON.parse(stdinData);
@@ -888,7 +1299,41 @@ process.stdin.on("end", () => {
     script_path
 }
 
+fn ensure_statusline_wrapper_script(script_path: &std::path::Path) -> PathBuf {
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+    let hooks_dir = home.join(".claude").join("hooks");
+    let wrapper_path = hooks_dir.join("pebble-bridge-statusline.sh");
+
+    let wrapper_content = format!(r#"#!/bin/bash
+data=$(cat)
+{{ echo "$data" | node "{}" StatusLine & }}
+plugin_dir=$(ls -d "${{CLAUDE_CONFIG_DIR:-$HOME/.claude}}"/plugins/cache/claude-hud/claude-hud/*/ 2>/dev/null | awk -F/ '{{ print $(NF-1) "\t" $(0) }}' | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n | tail -1 | cut -f2-)
+bun_path=$(command -v bun || echo "")
+if [ -n "$plugin_dir" ] && [ -n "$bun_path" ] && [ -x "$bun_path" ]; then
+    echo "$data" | exec "$bun_path" --env-file /dev/null "${{plugin_dir}}src/index.ts"
+fi
+exit 0
+"#, script_path.to_string_lossy());
+
+    if let Ok(existing) = fs::read_to_string(&wrapper_path) {
+        if existing.trim() == wrapper_content.trim() {
+            return wrapper_path;
+        }
+    }
+
+    let _ = fs::create_dir_all(&hooks_dir);
+    let _ = fs::write(&wrapper_path, wrapper_content);
+    #[cfg(target_family = "unix")]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&wrapper_path, std::fs::Permissions::from_mode(0o755));
+    }
+    wrapper_path
+}
+
 fn ensure_claude_hooks_config(script_path: &std::path::Path) {
+    let wrapper_path = ensure_statusline_wrapper_script(script_path);
+    let wrapper_cmd = format!("bash {}", wrapper_path.to_string_lossy());
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
     let settings_path = home.join(".claude").join("settings.json");
 
@@ -927,13 +1372,29 @@ fn ensure_claude_hooks_config(script_path: &std::path::Path) {
         }
     }
 
+    let existing_statusline = settings.get("statusLine").cloned();
+    let target_statusline = serde_json::json!({
+        "type": "command",
+        "command": wrapper_cmd,
+    });
+
+    let should_update = match &existing_statusline {
+        Some(serde_json::Value::String(cmd)) => !cmd.contains("pebble-bridge-statusline.sh"),
+        Some(serde_json::Value::Object(obj)) => obj.get("command").and_then(|c| c.as_str()).map(|s| !s.contains("pebble-bridge-statusline.sh")).unwrap_or(true),
+        _ => true,
+    };
+
+    if should_update || settings.get("statusLine") != Some(&target_statusline) {
+        settings["statusLine"] = target_statusline;
+        changed = true;
+    }
+
     if changed {
         settings["hooks"] = serde_json::Value::Object(existing_hooks);
         let _ = fs::write(&settings_path, serde_json::to_string_pretty(&settings).unwrap());
     }
 }
 
-#[cfg(target_os = "macos")]
 unsafe fn setup_notch_overlay(window: &tauri::WebviewWindow) {
     if let Ok(raw) = window.ns_window() {
         let ns_window: id = raw as id;
@@ -950,8 +1411,8 @@ unsafe fn setup_notch_overlay(window: &tauri::WebviewWindow) {
         ns_window.setMovableByWindowBackground_(false);
 
         // Position window top-center exactly
-        let screen_cls = class!(NSScreen);
-        let screen: id = msg_send![screen_cls, mainScreen];
+        let screen: id = msg_send![ns_window, screen];
+        if screen.is_null() { return; }
         let frame: NSRect = msg_send![screen, frame];
         let win_size = ns_window.frame().size;
         let x = frame.size.width / 2.0 - win_size.width / 2.0;
@@ -968,11 +1429,11 @@ unsafe fn setup_notch_overlay(window: &tauri::WebviewWindow) {
 }
 
 #[cfg(target_os = "macos")]
-unsafe fn start_hover_tracker(window: tauri::WebviewWindow) {
+unsafe fn start_hover_tracker(window: tauri::WebviewWindow, running: Arc<std::sync::atomic::AtomicBool>) {
     thread::spawn(move || {
         let mut was_inside = false;
-        loop {
-            thread::sleep(Duration::from_millis(80));
+        while running.load(std::sync::atomic::Ordering::Relaxed) {
+            thread::sleep(Duration::from_millis(16));
             if let Ok(raw) = window.ns_window() {
                 let ns_window: id = raw as id;
                 let frame: NSRect = ns_window.frame();
@@ -997,6 +1458,7 @@ unsafe fn start_hover_tracker(window: tauri::WebviewWindow) {
 
 fn main() {
     let instances = Arc::new(Mutex::new(HashMap::new()));
+    let hover_running = Arc::new(std::sync::atomic::AtomicBool::new(true));
 
     let script_path = ensure_hook_script();
     ensure_claude_hooks_config(&script_path);
@@ -1016,9 +1478,15 @@ fn main() {
                     let _ = window.set_size(tauri::Size::Logical(
                         tauri::LogicalSize { width: 324.0, height: 50.0 }
                     ));
+                    let hr = hover_running.clone();
+                    window.on_window_event(move |event| {
+                        if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+                            hr.store(false, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    });
                     unsafe {
                         setup_notch_overlay(&window);
-                        start_hover_tracker(window.clone());
+                        start_hover_tracker(window.clone(), hover_running.clone());
                     }
                 }
             }
