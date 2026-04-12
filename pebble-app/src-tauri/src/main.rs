@@ -72,7 +72,6 @@ fn jump_to_terminal(instance_id: String, state: State<'_, AppState>) -> Result<(
         context_percent: None,
         session_name: None,
         transcript_path: None,
-        sender_pid: Some(instance.pid),
     }).ok_or("No adapter found")?;
     adapter.jump_to_terminal(&instance)
 }
@@ -104,7 +103,6 @@ fn respond_permission(
         context_percent: None,
         session_name: None,
         transcript_path: None,
-        sender_pid: Some(instance.pid),
     }).ok_or("No adapter found")?;
 
     let response_json = adapter.respond_permission(&instance, &choice.to_lowercase(), None)?;
@@ -188,7 +186,6 @@ fn get_instance_preview(instance_id: String, state: State<'_, AppState>) -> Resu
         context_percent: None,
         session_name: None,
         transcript_path: None,
-        sender_pid: Some(instance.pid),
     }).ok_or("No adapter found")?;
 
     let states = state.adapter_states.lock();
@@ -432,8 +429,7 @@ fn main() {
                 context_percent: None,
                 session_name: payload.session_name.clone(),
                 transcript_path: payload.transcript_path.clone(),
-                sender_pid: payload.sender_pid,
-            };
+                    };
 
             let adapter = match registry_for_hook.find_adapter_for_event(&hook_payload) {
                 Some(a) => a,

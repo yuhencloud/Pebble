@@ -544,10 +544,6 @@ body,
 }
 
 /* Badge variants */
-.badge--context {
-  color: #6ee7b7;
-  background: rgba(16, 185, 129, 0.15);
-}
 
 .badge--mode {
   color: #a5b4fc;

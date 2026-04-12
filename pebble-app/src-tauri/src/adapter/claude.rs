@@ -37,7 +37,9 @@ impl Adapter for ClaudeAdapter {
         let mut results = Vec::new();
 
         for proc in claudes {
-            let cwd = platform::cwd::get_process_cwd(proc.pid)
+            let session = session::read_session_for_pid(proc.pid);
+            let cwd = session.as_ref().map(|s| s.cwd.clone())
+                .or_else(|| platform::cwd::get_process_cwd(proc.pid))
                 .unwrap_or_else(|| "Unknown".to_string());
             let terminal = platform::terminal::detect_terminal_app(proc.pid, &ps_output);
             let id = format!("cc-{}", proc.pid);
@@ -47,7 +49,6 @@ impl Adapter for ClaudeAdapter {
                 pid: proc.pid,
                 working_directory: cwd,
                 terminal_app: terminal,
-                subagents: Vec::new(),
             });
         }
 

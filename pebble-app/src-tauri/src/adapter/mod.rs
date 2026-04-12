@@ -11,7 +11,6 @@ pub struct RawInstance {
     pub pid: u32,
     pub working_directory: String,
     pub terminal_app: String,
-    pub subagents: Vec<SubagentInfo>,
 }
 
 /// Hook payload normalized for adapter consumption
@@ -28,7 +27,6 @@ pub struct HookPayload {
     pub context_percent: Option<u8>,
     pub session_name: Option<String>,
     pub transcript_path: Option<String>,
-    pub sender_pid: Option<u32>,
 }
 
 /// Mutable state held per instance by the adapter

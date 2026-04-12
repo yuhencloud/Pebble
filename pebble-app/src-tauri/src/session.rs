@@ -3,6 +3,7 @@ use serde::Deserialize;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SessionInfo {
     pub pid: u32,
     pub session_id: String,

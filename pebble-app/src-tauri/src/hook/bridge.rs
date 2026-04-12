@@ -153,9 +153,3 @@ pub fn ensure_claude_hooks_config(script_path: &std::path::Path) {
     }
 }
 
-pub fn uninstall_hooks(script_path: &std::path::Path) {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-    let hooks_dir = home.join(".claude").join("hooks");
-    let _ = fs::remove_file(hooks_dir.join("pebble-bridge-statusline.sh"));
-    let _ = fs::remove_file(script_path);
-}
