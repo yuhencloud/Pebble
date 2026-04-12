@@ -46,10 +46,7 @@ impl PermissionResponseStore {
 }
 
 fn log_event(msg: &str) {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
     eprintln!("[pebble-hook {}] {}", now, msg);
 }
 
@@ -94,23 +91,26 @@ fn read_request(stream: &mut TcpStream) -> Option<String> {
                 if n >= buf.len() {
                     return None;
                 }
-                // Check if we've received the full headers
-                let req_str = String::from_utf8_lossy(&buf[..n]);
-                if let Some(header_end) = req_str.find("\r\n\r\n") {
-                    let headers = &req_str[..header_end];
-                    let content_length = headers.lines()
+                // Search for header end in raw bytes to avoid repeated string conversion
+                if let Some(header_end) = buf[..n].windows(4).position(|w| w == b"\r\n\r\n") {
+                    let body_start = header_end + 4;
+                    let content_length = String::from_utf8_lossy(&buf[..header_end])
+                        .lines()
                         .find(|line| line.to_lowercase().starts_with("content-length:"))
                         .and_then(|line| line.split(':').nth(1))
                         .and_then(|v| v.trim().parse::<usize>().ok())
                         .unwrap_or(0);
-                    let body_start = header_end + 4;
                     if n >= body_start + content_length {
-                        return Some(req_str[..body_start + content_length].to_string());
+                        return Some(String::from_utf8_lossy(&buf[..body_start + content_length]).to_string());
                     }
                 }
             }
             Err(_) => break,
         }
+    }
+    // If buffer is full and we still don't have a complete request, treat as too large
+    if n >= buf.len() {
+        return None;
     }
     let req_str = String::from_utf8_lossy(&buf[..n]);
     if req_str.is_empty() { None } else { Some(req_str.to_string()) }
@@ -152,49 +152,84 @@ where
         let body = serde_json::to_string(&list).unwrap_or_else(|_| "[]".to_string());
         write_response(&mut stream, "200 OK", &body);
     } else if first_line.starts_with("POST /hook") {
-        if let Some(body_start) = req.find("\r\n\r\n") {
-            let body = &req[body_start + 4..];
-            if let Ok(payload) = serde_json::from_str::<crate::types::IncomingHookPayload>(body) {
-                log_event(&format!("event={} tool={:?} mode={:?} tool_use_id={:?} ts={}",
-                    payload.event,
-                    payload.tool_name,
-                    payload.permission_mode,
-                    payload.tool_use_id,
-                    payload.timestamp
-                ));
-                handler.lock()(&payload);
-                let should_block = payload.event == "PermissionRequest"
-                    || (payload.event == "PreToolUse"
-                        && !matches!(
-                            payload.permission_mode.as_deref(),
-                            Some("bypassPermissions" | "dontAsk" | "auto" | "acceptEdits")
-                        ));
-                if should_block {
-                    let key = payload
-                        .tool_use_id
-                        .clone()
-                        .unwrap_or_else(|| payload.timestamp.to_string());
-                    log_event(&format!("blocking for key={} event={}", key, payload.event));
-                    if let Some(response_body) =
-                        permission_store.wait_for(&key, Duration::from_secs(300))
-                    {
-                        log_event(&format!("responded key={} body={}", key, response_body));
-                        write_response(&mut stream, "200 OK", &response_body);
-                    } else {
-                        log_event(&format!("timeout key={}", key));
-                        write_response(&mut stream, "200 OK", "OK");
-                    }
+        let Some(body_start) = req.find("\r\n\r\n") else {
+            write_response(&mut stream, "400 Bad Request", "");
+            return;
+        };
+        let body = &req[body_start + 4..];
+        if let Ok(payload) = serde_json::from_str::<crate::types::IncomingHookPayload>(body) {
+            log_event(&format!("event={} tool={:?} mode={:?} tool_use_id={:?} ts={}",
+                payload.event,
+                payload.tool_name,
+                payload.permission_mode,
+                payload.tool_use_id,
+                payload.timestamp
+            ));
+            handler.lock()(&payload);
+            let should_block = payload.event == "PermissionRequest"
+                || (payload.event == "PreToolUse"
+                    && !matches!(
+                        payload.permission_mode.as_deref(),
+                        Some("bypassPermissions" | "dontAsk" | "auto" | "acceptEdits")
+                    ));
+            if should_block {
+                let key = payload
+                    .tool_use_id
+                    .clone()
+                    .unwrap_or_else(|| payload.timestamp.to_string());
+                log_event(&format!("blocking for key={} event={}", key, payload.event));
+                if let Some(response_body) =
+                    permission_store.wait_for(&key, Duration::from_secs(300))
+                {
+                    log_event(&format!("responded key={} body={}", key, response_body));
+                    write_response(&mut stream, "200 OK", &response_body);
                 } else {
+                    log_event(&format!("timeout key={}", key));
                     write_response(&mut stream, "200 OK", "OK");
                 }
             } else {
-                log_event(&format!("failed to parse hook body: {}", body));
                 write_response(&mut stream, "200 OK", "OK");
             }
         } else {
+            log_event(&format!("failed to parse hook body: {}", body));
             write_response(&mut stream, "200 OK", "OK");
         }
     } else {
         write_response(&mut stream, "404 Not Found", "");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::thread;
+    use std::time::Duration;
+
+    #[test]
+    fn test_permission_store_set_and_wait() {
+        let store = PermissionResponseStore::new();
+        store.set("key1".to_string(), "value1".to_string());
+        let result = store.wait_for("key1", Duration::from_millis(100));
+        assert_eq!(result, Some("value1".to_string()));
+    }
+
+    #[test]
+    fn test_permission_store_timeout() {
+        let store = PermissionResponseStore::new();
+        let result = store.wait_for("missing", Duration::from_millis(50));
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_permission_store_concurrent_set_wait() {
+        let store = PermissionResponseStore::new();
+        let store_clone = store.clone();
+        let handle = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
+            store_clone.set(" concurrent".to_string(), "ok".to_string());
+        });
+        let result = store.wait_for(" concurrent", Duration::from_millis(500));
+        assert_eq!(result, Some("ok".to_string()));
+        handle.join().unwrap();
     }
 }

@@ -74,7 +74,7 @@ function getSessionName(inst: Instance): string {
   if (inst.transcript_path) {
     const parts = inst.transcript_path.split(/[/\\]/);
     const idx = parts.indexOf("transcripts");
-    if (idx >= 0 && idx + 1 < parts.length) {
+    if (idx >= 0 && idx + 1 < parts.length && !/^[0-9a-f-]{36}$/i.test(parts[idx + 1])) {
       return parts[idx + 1];
     }
     const fileName = parts[parts.length - 1] || "";

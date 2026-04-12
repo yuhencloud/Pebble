@@ -213,12 +213,12 @@ impl Adapter for ClaudeAdapter {
         reason: Option<&str>,
     ) -> Result<String, String> {
         let trimmed = decision.trim();
+        let behavior = Self::normalize_permission_choice(trimmed)?;
         let is_pretooluse = instance
             .last_hook_event
             .as_ref()
             .map(|e| e.event == "PreToolUse")
             .unwrap_or(false);
-        let behavior = if trimmed.eq_ignore_ascii_case("deny") { "deny" } else { "allow" };
 
         if is_pretooluse {
             let mut hso = serde_json::json!({
@@ -244,6 +244,21 @@ impl Adapter for ClaudeAdapter {
                     "decision": decision_obj
                 }
             }).to_string())
+        }
+    }
+}
+
+impl ClaudeAdapter {
+    fn normalize_permission_choice(choice: &str) -> Result<&'static str, String> {
+        if choice.eq_ignore_ascii_case("allow")
+            || choice.eq_ignore_ascii_case("allow for this conversation")
+            || choice.eq_ignore_ascii_case("allow once")
+        {
+            Ok("allow")
+        } else if choice.eq_ignore_ascii_case("deny") {
+            Ok("deny")
+        } else {
+            Err(format!("Invalid permission choice: {}", choice))
         }
     }
 }
