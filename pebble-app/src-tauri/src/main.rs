@@ -62,16 +62,7 @@ fn jump_to_terminal(instance_id: String, state: State<'_, AppState>) -> Result<(
         .find(|i| i.id == instance_id)
         .cloned()
         .ok_or("Instance not found")?;
-
-    if instance.terminal_app == "iTerm2" {
-        if let Some(tty) = get_process_tty(instance.pid) {
-            activate_iterm2_session(&tty).map_err(|e| e.to_string())?;
-        } else {
-            activate_iterm2().map_err(|e| e.to_string())?;
-        }
-    }
-
-    Ok(())
+    platform::jump::jump_to_terminal(instance.pid, &instance.terminal_app)
 }
 
 #[tauri::command]
@@ -104,7 +95,7 @@ fn respond_permission(
         .unwrap_or(0);
 
     if instance.terminal_app == "iTerm2" {
-        if let Some(tty) = get_process_tty(instance.pid) {
+        if let Some(tty) = platform::jump::get_process_tty(instance.pid) {
             inject_permission_response_to_iterm2(&tty, target_idx, default_idx)
                 .map_err(|e| e.to_string())?;
         } else {
@@ -180,7 +171,7 @@ fn get_instance_preview(instance_id: String, state: State<'_, AppState>) -> Resu
 
     // Fallback: read from iTerm2 if applicable
     if instance.terminal_app == "iTerm2" {
-        if let Some(tty) = get_process_tty(instance.pid) {
+        if let Some(tty) = platform::jump::get_process_tty(instance.pid) {
             let lines = read_iterm2_last_lines(&tty, 8);
             let filtered: Vec<String> = lines
                 .into_iter()
@@ -207,73 +198,6 @@ fn get_instance_preview(instance_id: String, state: State<'_, AppState>) -> Resu
     }
 
     Ok("No recent activity".to_string())
-}
-
-fn get_process_tty(pid: u32) -> Option<String> {
-    if pid == 0 {
-        return None;
-    }
-    let output = Command::new("ps")
-        .args(&["-p", &pid.to_string(), "-o", "tty="])
-        .output()
-        .ok()?;
-    let tty = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if tty.is_empty() || tty == "??" {
-        None
-    } else {
-        Some(tty)
-    }
-}
-
-fn activate_iterm2() -> Result<(), Box<dyn std::error::Error>> {
-    let script = r#"
-        tell application "iTerm2"
-            activate
-        end tell
-    "#;
-
-    Command::new("osascript")
-        .arg("-e")
-        .arg(script)
-        .output()?;
-
-    Ok(())
-}
-
-fn activate_iterm2_session(tty: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let script = format!(
-        r#"
-        tell application "iTerm2"
-            activate
-            repeat with aWindow in windows
-                repeat with aTab in tabs of aWindow
-                    repeat with aSession in sessions of aTab
-                        if tty of aSession contains "{}" then
-                            tell aWindow
-                                select
-                            end tell
-                            tell aTab
-                                select
-                            end tell
-                            tell aSession
-                                select
-                            end tell
-                            return
-                        end if
-                    end repeat
-                end repeat
-            end repeat
-        end tell
-    "#,
-        tty
-    );
-
-    Command::new("osascript")
-        .arg("-e")
-        .arg(&script)
-        .output()?;
-
-    Ok(())
 }
 
 fn inject_permission_response_to_iterm2(
@@ -877,7 +801,7 @@ fn update_instance_from_hook(
         if is_permission_event {
             let tool_name = event.tool_name.clone().unwrap_or_else(|| "Tool".to_string());
             let tool_use_id = event.tool_use_id.clone().unwrap_or_default();
-            let tty = get_process_tty(instance.pid);
+            let tty = platform::jump::get_process_tty(instance.pid);
             let id = instance.id.clone();
             thread::spawn(move || {
                 thread::sleep(Duration::from_millis(500));
