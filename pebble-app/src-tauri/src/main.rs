@@ -2,6 +2,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use serde::{Deserialize, Serialize};
+
+mod types;
+use types::{AppState, HookEvent, IncomingHookPayload, Instance, PendingPermission, SubagentInfo};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Write};
@@ -27,104 +30,6 @@ use cocoa::foundation::{NSPoint, NSRect, NSSize};
 
 const HOOK_PORT: u16 = 9876;
 const EXECUTING_TIMEOUT_SECS: u64 = 30;
-
-#[derive(Serialize, Clone, Debug)]
-struct PendingPermission {
-    tool_name: String,
-    tool_use_id: String,
-    prompt: String,
-    choices: Vec<String>,
-    default_choice: Option<String>,
-}
-
-#[derive(Serialize, Clone, Debug)]
-struct SubagentInfo {
-    id: String,
-    status: String,
-    name: String,
-}
-
-#[derive(Serialize, Clone, Debug)]
-struct Instance {
-    id: String,
-    pid: u32,
-    status: String,
-    working_directory: String,
-    terminal_app: String,
-    last_activity: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pending_permission: Option<PendingPermission>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    last_hook_event: Option<HookEvent>,
-    #[serde(default)]
-    subagents: Vec<SubagentInfo>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    model: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    permission_mode: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    context_percent: Option<u8>,
-    #[serde(skip_serializing_if = "Vec::is_empty", default)]
-    conversation_log: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    session_start: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    transcript_path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    session_name: Option<String>,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-struct HookEvent {
-    event: String,
-    cwd: String,
-    timestamp: u64,
-    #[serde(default)]
-    tool_name: Option<String>,
-    #[serde(default, rename = "tool_input")]
-    tool_input: Option<serde_json::Value>,
-    #[serde(default, rename = "permission_mode")]
-    permission_mode: Option<String>,
-    #[serde(default, rename = "tool_use_id")]
-    tool_use_id: Option<String>,
-    #[serde(default, rename = "model")]
-    model: Option<String>,
-    #[serde(default, rename = "context_percent")]
-    context_percent: Option<u8>,
-    #[serde(default, rename = "session_name")]
-    session_name: Option<String>,
-}
-
-#[derive(Deserialize, Debug)]
-struct IncomingHookPayload {
-    event: String,
-    cwd: String,
-    timestamp: u64,
-    #[serde(default)]
-    tool_name: Option<String>,
-    #[serde(default, rename = "tool_input")]
-    tool_input: Option<serde_json::Value>,
-    #[serde(default, rename = "permission_mode")]
-    permission_mode: Option<String>,
-    #[serde(default, rename = "tool_use_id")]
-    tool_use_id: Option<String>,
-    #[serde(default, rename = "model")]
-    raw_model: Option<serde_json::Value>,
-    #[serde(default, rename = "context_percent")]
-    context_percent: Option<u8>,
-    #[serde(default, rename = "context_window")]
-    context_window: Option<serde_json::Value>,
-    #[serde(default, rename = "transcript_path")]
-    transcript_path: Option<String>,
-    #[serde(default, rename = "session_name")]
-    session_name: Option<String>,
-    #[serde(default, rename = "sender_pid")]
-    sender_pid: Option<u32>,
-}
-
-struct AppState {
-    instances: Arc<Mutex<HashMap<String, Instance>>>,
-}
 
 fn is_related_cwd(a: &str, b: &str) -> bool {
     let a = std::path::Path::new(a);
