@@ -350,6 +350,7 @@ fn start_state_monitor(
     });
 }
 
+#[cfg(target_os = "macos")]
 unsafe fn setup_notch_overlay(window: &tauri::WebviewWindow) {
     if let Ok(raw) = window.ns_window() {
         let ns_window: id = raw as id;
@@ -405,6 +406,38 @@ unsafe fn start_hover_tracker(window: tauri::WebviewWindow, running: Arc<std::sy
                 if inside != was_inside {
                     was_inside = inside;
                     let _ = window.emit("pebble-hover", inside);
+                }
+            }
+        }
+    });
+}
+
+#[cfg(target_os = "windows")]
+fn start_hover_tracker(window: tauri::WebviewWindow, running: Arc<std::sync::atomic::AtomicBool>) {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, GetWindowRect};
+    thread::spawn(move || {
+        let mut was_inside = false;
+        while running.load(std::sync::atomic::Ordering::Relaxed) {
+            thread::sleep(Duration::from_millis(60));
+            unsafe {
+                let mut pt = windows::Win32::Foundation::POINT::default();
+                let mut rect = RECT::default();
+                let hwnd_val = match window.hwnd() {
+                    Ok(h) => h.0 as isize,
+                    Err(_) => continue,
+                };
+                if hwnd_val == 0 {
+                    continue;
+                }
+                let hwnd = windows::Win32::Foundation::HWND(hwnd_val as *mut core::ffi::c_void);
+                if GetCursorPos(&mut pt).is_ok() && GetWindowRect(hwnd, &mut rect).is_ok() {
+                    let inside = pt.x >= rect.left && pt.x <= rect.right
+                        && pt.y >= rect.top && pt.y <= rect.bottom;
+                    if inside != was_inside {
+                        was_inside = inside;
+                        let _ = window.emit("pebble-hover", inside);
+                    }
                 }
             }
         }
@@ -585,6 +618,13 @@ fn main() {
                             tauri::LogicalSize { width: w, height: 52.0 }
                         ));
                     }
+                    let hr = hover_running.clone();
+                    window.on_window_event(move |event| {
+                        if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+                            hr.store(false, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    });
+                    start_hover_tracker(window, hover_running.clone());
                 }
             }
             start_state_monitor(instances.clone(), adapter_states.clone(), registry.clone(), app.handle().clone());
