@@ -74,6 +74,8 @@ fn jump_to_terminal(instance_id: String, state: State<'_, AppState>) -> Result<(
         transcript_path: None,
         choices: None,
         default_choice: None,
+        wezterm_pane_id: None,
+        wt_session_id: None,
     }).ok_or("No adapter found")?;
     adapter.jump_to_terminal(&instance)
 }
@@ -107,6 +109,8 @@ fn respond_permission(
         transcript_path: None,
         choices: None,
         default_choice: None,
+        wezterm_pane_id: None,
+        wt_session_id: None,
     }).ok_or("No adapter found")?;
 
     let event_type = instance.last_hook_event.as_ref().map(|e| e.event.clone()).unwrap_or_else(|| "PermissionRequest".to_string());
@@ -211,6 +215,8 @@ fn get_instance_preview(instance_id: String, state: State<'_, AppState>) -> Resu
         transcript_path: None,
         choices: None,
         default_choice: None,
+        wezterm_pane_id: None,
+        wt_session_id: None,
     }).ok_or("No adapter found")?;
 
     let states = state.adapter_states.lock();
@@ -259,6 +265,8 @@ fn start_state_monitor(
                     session_start: None,
                     transcript_path: None,
                     session_name: raw.session_name.clone(),
+                    wezterm_pane_id: None,
+                    wt_session_id: None,
                 };
                 if let Some(existing) = map.get(&id) {
                     instance.status = existing.status.clone();
@@ -489,6 +497,8 @@ fn main() {
                 transcript_path: payload.transcript_path.clone(),
                 choices: payload.choices.clone(),
                 default_choice: payload.default_choice.clone(),
+                wezterm_pane_id: payload.wezterm_pane_id.clone(),
+                wt_session_id: payload.wt_session_id.clone(),
                     };
 
             let adapter = match registry_for_hook.find_adapter_for_event(&hook_payload) {
@@ -575,6 +585,8 @@ fn main() {
                     session_start: new_state.session_start,
                     transcript_path: new_state.transcript_path.clone(),
                     session_name: new_state.session_name.clone(),
+                    wezterm_pane_id: new_state.wezterm_pane_id.clone(),
+                    wt_session_id: new_state.wt_session_id.clone(),
                 };
                 adapter_states_for_hook.lock().insert(id.clone(), new_state);
                 map.insert(id, instance);

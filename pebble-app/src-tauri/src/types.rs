@@ -47,6 +47,10 @@ pub struct Instance {
     pub transcript_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wezterm_pane_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wt_session_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -99,6 +103,10 @@ pub struct IncomingHookPayload {
     pub choices: Option<Vec<String>>,
     #[serde(default, rename = "default_choice")]
     pub default_choice: Option<String>,
+    #[serde(default, rename = "wezterm_pane_id")]
+    pub wezterm_pane_id: Option<String>,
+    #[serde(default, rename = "wt_session_id")]
+    pub wt_session_id: Option<String>,
 }
 
 pub struct AppState {
