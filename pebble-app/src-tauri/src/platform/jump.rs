@@ -159,16 +159,35 @@ mod win {
         HWND(std::ptr::null_mut())
     }
 
-    fn activate_wezterm_pane(pane_id: &str) -> Result<(), String> {
-        let output = std::process::Command::new("wezterm")
-            .args(["cli", "activate-tab", "--pane-id", pane_id])
-            .output()
-            .map_err(|e| format!("Failed to run wezterm cli: {}", e))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("wezterm cli failed: {}", stderr));
+    fn activate_wezterm_pane(pane_id: &str, unix_socket: Option<&str>) -> Result<(), String> {
+        let mut cmd = std::process::Command::new("wezterm");
+        cmd.args(["cli", "activate-tab", "--pane-id", pane_id]);
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
         }
-        Ok(())
+        if let Some(sock) = unix_socket {
+            cmd.env("WEZTERM_UNIX_SOCKET", sock);
+        }
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = cmd.output();
+            let _ = tx.send(result);
+        });
+
+        match rx.recv_timeout(std::time::Duration::from_millis(800)) {
+            Ok(Ok(output)) => {
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    return Err(format!("wezterm cli failed: {}", stderr));
+                }
+                Ok(())
+            }
+            Ok(Err(e)) => Err(format!("Failed to run wezterm cli: {}", e)),
+            Err(_) => Err("wezterm cli timed out".to_string()),
+        }
     }
 
     pub fn jump_to_terminal(
@@ -176,13 +195,18 @@ mod win {
         terminal_app: &str,
         wezterm_pane_id: Option<&str>,
         _wt_session_id: Option<&str>,
+        wezterm_unix_socket: Option<&str>,
     ) -> Result<(), String> {
-        // Terminal-specific precision jump
+        eprintln!("[pebble-jump] pid={} terminal_app={} pane={:?} socket={:?}", pid, terminal_app, wezterm_pane_id, wezterm_unix_socket);
+        // Terminal-specific precision jump (tab switch within WezTerm)
         if terminal_app == "WezTerm" {
             if let Some(pane) = wezterm_pane_id {
-                if let Ok(()) = activate_wezterm_pane(pane) {
-                    return Ok(());
+                match activate_wezterm_pane(pane, wezterm_unix_socket) {
+                    Ok(()) => eprintln!("[pebble-jump] WezTerm pane activated, proceeding to window activation"),
+                    Err(e) => eprintln!("[pebble-jump] WezTerm pane activation failed: {}", e),
                 }
+            } else {
+                eprintln!("[pebble-jump] WezTerm detected but no pane_id available, falling back to window");
             }
         }
         // For WindowsTerminal, wt_session_id could be used here once
@@ -228,6 +252,7 @@ pub fn jump_to_terminal(
     terminal_app: &str,
     _wezterm_pane_id: Option<&str>,
     _wt_session_id: Option<&str>,
+    _wezterm_unix_socket: Option<&str>,
 ) -> Result<(), String> {
     match terminal_app {
         "iTerm2" => {
@@ -248,6 +273,7 @@ pub fn jump_to_terminal(
     _terminal_app: &str,
     _wezterm_pane_id: Option<&str>,
     _wt_session_id: Option<&str>,
+    _wezterm_unix_socket: Option<&str>,
 ) -> Result<(), String> {
     Ok(())
 }

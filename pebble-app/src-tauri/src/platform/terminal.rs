@@ -12,38 +12,59 @@ fn is_terminal_process(comm: &str, args: &str) -> bool {
         || full.contains("pwsh") || full.contains("powershell")
 }
 
+fn terminal_app_name(comm: &str) -> Option<&'static str> {
+    if comm.contains("iterm2") || comm.contains("iterm") {
+        return Some("iTerm2");
+    }
+    // Check windowsterminal BEFORE terminal because "windowsterminal" contains "terminal"
+    if comm.contains("windowsterminal") || comm.contains("windows terminal") {
+        return Some("WindowsTerminal");
+    }
+    if comm.contains("terminal") || comm.contains("apple_terminal") {
+        return Some("Terminal.app");
+    }
+    if comm.contains("tmux") {
+        return Some("tmux");
+    }
+    if comm.contains("wezterm") {
+        return Some("WezTerm");
+    }
+    if comm.contains("alacritty") {
+        return Some("Alacritty");
+    }
+    if comm.contains("conhost") || comm.contains("cmd") {
+        return Some("cmd");
+    }
+    if comm.contains("pwsh") || comm.contains("powershell") {
+        return Some("PowerShell");
+    }
+    None
+}
+
 pub fn detect_terminal_app(pid: u32) -> String {
     let s = System::new_all();
     let mut current_pid = sysinfo::Pid::from(pid as usize);
+    let mut best_app: Option<&'static str> = None;
     for _ in 0..10 {
         if let Some(proc) = s.process(current_pid) {
             let comm = proc.name().to_lowercase();
             let args = proc.cmd().join(" ").to_lowercase();
             if is_terminal_process(&comm, &args) {
-                if comm.contains("iterm2") || comm.contains("iterm") {
-                    return "iTerm2".to_string();
+                if let Some(app) = terminal_app_name(&comm) {
+                    best_app = Some(app);
+                    // On Windows, keep walking up to find the actual terminal emulator
+                    // (e.g., WezTerm or WindowsTerminal) rather than stopping at the shell
+                    // (e.g., pwsh.exe or cmd.exe).
+                    if cfg!(target_os = "windows") {
+                        if let Some(parent) = proc.parent() {
+                            if parent.as_u32() != 0 && parent.as_u32() != current_pid.as_u32() {
+                                current_pid = parent;
+                                continue;
+                            }
+                        }
+                    }
                 }
-                if comm.contains("terminal") || comm.contains("apple_terminal") {
-                    return "Terminal.app".to_string();
-                }
-                if comm.contains("tmux") {
-                    return "tmux".to_string();
-                }
-                if comm.contains("windowsterminal") || comm.contains("windows terminal") {
-                    return "WindowsTerminal".to_string();
-                }
-                if comm.contains("wezterm") {
-                    return "WezTerm".to_string();
-                }
-                if comm.contains("alacritty") {
-                    return "Alacritty".to_string();
-                }
-                if comm.contains("conhost") || comm.contains("cmd") {
-                    return "cmd".to_string();
-                }
-                if comm.contains("pwsh") || comm.contains("powershell") {
-                    return "PowerShell".to_string();
-                }
+                return best_app.unwrap_or("Unknown").to_string();
             }
             if let Some(parent) = proc.parent() {
                 if parent.as_u32() == 0 || parent.as_u32() == current_pid.as_u32() {
@@ -55,7 +76,7 @@ pub fn detect_terminal_app(pid: u32) -> String {
         }
         break;
     }
-    "Unknown".to_string()
+    best_app.unwrap_or("Unknown").to_string()
 }
 
 /// Returns the PID of the terminal process that owns the window.
