@@ -85,6 +85,9 @@ impl Adapter for ClaudeAdapter {
         if let Some(ref session) = payload.wt_session_id {
             state.wt_session_id = Some(session.clone());
         }
+        if let Some(ref sock) = payload.wezterm_unix_socket {
+            state.wezterm_unix_socket = Some(sock.clone());
+        }
         if let Some(ref m) = payload.model {
             state.model = Some(m.clone());
         }
@@ -206,6 +209,7 @@ impl Adapter for ClaudeAdapter {
             &instance.terminal_app,
             instance.wezterm_pane_id.as_deref(),
             instance.wt_session_id.as_deref(),
+            instance.wezterm_unix_socket.as_deref(),
         )
     }
 
