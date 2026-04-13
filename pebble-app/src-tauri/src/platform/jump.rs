@@ -159,8 +159,36 @@ mod win {
         HWND(std::ptr::null_mut())
     }
 
-    pub fn jump_to_terminal(pid: u32, _terminal_app: &str) -> Result<(), String> {
-        // Strategy 1: Try direct PID and detected terminal PID
+    fn activate_wezterm_pane(pane_id: &str) -> Result<(), String> {
+        let output = std::process::Command::new("wezterm")
+            .args(["cli", "activate-tab", "--pane-id", pane_id])
+            .output()
+            .map_err(|e| format!("Failed to run wezterm cli: {}", e))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("wezterm cli failed: {}", stderr));
+        }
+        Ok(())
+    }
+
+    pub fn jump_to_terminal(
+        pid: u32,
+        terminal_app: &str,
+        wezterm_pane_id: Option<&str>,
+        _wt_session_id: Option<&str>,
+    ) -> Result<(), String> {
+        // Terminal-specific precision jump
+        if terminal_app == "WezTerm" {
+            if let Some(pane) = wezterm_pane_id {
+                if let Ok(()) = activate_wezterm_pane(pane) {
+                    return Ok(());
+                }
+            }
+        }
+        // For WindowsTerminal, wt_session_id could be used here once
+        // Microsoft adds a CLI flag to focus by session. For now, fall through.
+
+        // Fallback: window-level activation
         let mut hwnd = find_visible_window(pid);
         if hwnd.0.is_null() {
             let terminal_pid = crate::platform::terminal::detect_terminal_pid(pid);
@@ -168,7 +196,6 @@ mod win {
                 hwnd = find_visible_window(terminal_pid);
             }
         }
-        // Strategy 2: Walk the entire ancestor chain looking for any window
         if hwnd.0.is_null() {
             hwnd = find_window_walking_ancestors(pid);
         }
@@ -196,7 +223,12 @@ mod win {
 pub use win::jump_to_terminal;
 
 #[cfg(target_os = "macos")]
-pub fn jump_to_terminal(pid: u32, terminal_app: &str) -> Result<(), String> {
+pub fn jump_to_terminal(
+    pid: u32,
+    terminal_app: &str,
+    _wezterm_pane_id: Option<&str>,
+    _wt_session_id: Option<&str>,
+) -> Result<(), String> {
     match terminal_app {
         "iTerm2" => {
             if let Some(tty) = get_process_tty(pid) {
@@ -211,6 +243,11 @@ pub fn jump_to_terminal(pid: u32, terminal_app: &str) -> Result<(), String> {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-pub fn jump_to_terminal(_pid: u32, _terminal_app: &str) -> Result<(), String> {
+pub fn jump_to_terminal(
+    _pid: u32,
+    _terminal_app: &str,
+    _wezterm_pane_id: Option<&str>,
+    _wt_session_id: Option<&str>,
+) -> Result<(), String> {
     Ok(())
 }

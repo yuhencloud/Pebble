@@ -201,7 +201,12 @@ impl Adapter for ClaudeAdapter {
     }
 
     fn jump_to_terminal(&self, instance: &Instance) -> Result<(), String> {
-        platform::jump::jump_to_terminal(instance.pid, &instance.terminal_app)
+        platform::jump::jump_to_terminal(
+            instance.pid,
+            &instance.terminal_app,
+            instance.wezterm_pane_id.as_deref(),
+            instance.wt_session_id.as_deref(),
+        )
     }
 
     fn respond_permission(
