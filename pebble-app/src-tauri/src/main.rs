@@ -54,12 +54,13 @@ fn get_instances(state: State<'_, AppState>) -> Vec<Instance> {
 
 #[tauri::command]
 fn jump_to_terminal(instance_id: String, state: State<'_, AppState>) -> Result<(), String> {
-    let map = state.instances.lock();
-    let instance = map
-        .values()
-        .find(|i| i.id == instance_id)
-        .cloned()
-        .ok_or("Instance not found")?;
+    let instance = {
+        let map = state.instances.lock();
+        map.values()
+            .find(|i| i.id == instance_id)
+            .cloned()
+            .ok_or("Instance not found")?
+    };
     let adapter = state.registry.find_adapter_for_event(&adapter::HookPayload {
         event: "discover".to_string(),
         cwd: instance.working_directory.clone(),
@@ -296,6 +297,16 @@ fn start_state_monitor(
                     let state = states.get(&id).cloned().unwrap_or_default();
                     instance.conversation_log = adapter.get_preview(&state);
                     instance.subagents = adapter.get_subagents(&state);
+                    // Apply pane/session data from adapter state (set by hooks)
+                    if state.wezterm_pane_id.is_some() {
+                        instance.wezterm_pane_id = state.wezterm_pane_id.clone();
+                    }
+                    if state.wt_session_id.is_some() {
+                        instance.wt_session_id = state.wt_session_id.clone();
+                    }
+                    if state.wezterm_unix_socket.is_some() {
+                        instance.wezterm_unix_socket = state.wezterm_unix_socket.clone();
+                    }
                 }
 
                 new_map.insert(id.clone(), instance);
@@ -333,6 +344,21 @@ fn start_state_monitor(
                             }
                             if inst.context_percent.is_some() {
                                 disc.context_percent = inst.context_percent;
+                            }
+                            if inst.wezterm_pane_id.is_some() {
+                                disc.wezterm_pane_id.clone_from(&inst.wezterm_pane_id);
+                            }
+                            if inst.wt_session_id.is_some() {
+                                disc.wt_session_id.clone_from(&inst.wt_session_id);
+                            }
+                            if inst.wezterm_unix_socket.is_some() {
+                                disc.wezterm_unix_socket.clone_from(&inst.wezterm_unix_socket);
+                            }
+                            if inst.pending_permission.is_some() {
+                                disc.pending_permission.clone_from(&inst.pending_permission);
+                            }
+                            if inst.status != "waiting" {
+                                disc.status.clone_from(&inst.status);
                             }
                             merged = true;
                             break;

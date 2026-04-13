@@ -59,6 +59,17 @@ pub fn activate_iterm2_session(tty: &str) -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+pub fn activate_terminal_app() -> Result<(), Box<dyn std::error::Error>> {
+    let script = r#"
+        tell application "Terminal"
+            activate
+        end tell
+    "#;
+    Command::new("osascript").arg("-e").arg(script).output()?;
+    Ok(())
+}
+
 #[cfg(not(target_os = "macos"))]
 pub fn activate_iterm2() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
@@ -66,6 +77,11 @@ pub fn activate_iterm2() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(not(target_os = "macos"))]
 pub fn activate_iterm2_session(_tty: &str) -> Result<(), Box<dyn std::error::Error>> {
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn activate_terminal_app() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
@@ -159,9 +175,9 @@ mod win {
         HWND(std::ptr::null_mut())
     }
 
-    fn activate_wezterm_pane(pane_id: &str, unix_socket: Option<&str>) -> Result<(), String> {
+    fn run_wezterm_cli(args: &[&str], unix_socket: Option<&str>) -> Result<(), String> {
         let mut cmd = std::process::Command::new("wezterm");
-        cmd.args(["cli", "activate-tab", "--pane-id", pane_id]);
+        cmd.args(args);
         #[cfg(target_os = "windows")]
         {
             use std::os::windows::process::CommandExt;
@@ -172,6 +188,7 @@ mod win {
         }
 
         let (tx, rx) = std::sync::mpsc::channel();
+        let args_str = args.join(" ");
         std::thread::spawn(move || {
             let result = cmd.output();
             let _ = tx.send(result);
@@ -181,13 +198,22 @@ mod win {
             Ok(Ok(output)) => {
                 if !output.status.success() {
                     let stderr = String::from_utf8_lossy(&output.stderr);
-                    return Err(format!("wezterm cli failed: {}", stderr));
+                    return Err(format!("wezterm cli {} failed: {}", args_str, stderr));
                 }
                 Ok(())
             }
-            Ok(Err(e)) => Err(format!("Failed to run wezterm cli: {}", e)),
-            Err(_) => Err("wezterm cli timed out".to_string()),
+            Ok(Err(e)) => Err(format!("Failed to run wezterm cli {}: {}", args_str, e)),
+            Err(_) => Err(format!("wezterm cli {} timed out", args_str)),
         }
+    }
+
+    fn activate_wezterm_pane(pane_id: &str, unix_socket: Option<&str>) -> Result<(), String> {
+        // First switch to the correct tab containing this pane
+        if let Err(e) = run_wezterm_cli(&["cli", "activate-tab", "--pane-id", pane_id], unix_socket) {
+            eprintln!("[pebble-jump] activate-tab failed: {}", e);
+        }
+        // Then focus the specific pane within that tab
+        run_wezterm_cli(&["cli", "activate-pane", "--pane-id", pane_id], unix_socket)
     }
 
     pub fn jump_to_terminal(
@@ -254,15 +280,35 @@ pub fn jump_to_terminal(
     _wt_session_id: Option<&str>,
     _wezterm_unix_socket: Option<&str>,
 ) -> Result<(), String> {
-    match terminal_app {
+    // Re-detect terminal if it was not identified during discovery
+    let effective_app = if terminal_app == "Unknown" {
+        let detected = crate::platform::terminal::detect_terminal_app(pid);
+        eprintln!("[pebble-jump] terminal_app was Unknown, re-detected as: {}", detected);
+        detected
+    } else {
+        terminal_app.to_string()
+    };
+    eprintln!("[pebble-jump] mac pid={} terminal_app={} effective={}", pid, terminal_app, effective_app);
+
+    match effective_app.as_str() {
         "iTerm2" => {
             if let Some(tty) = get_process_tty(pid) {
-                activate_iterm2_session(&tty).map_err(|e| e.to_string())?;
+                eprintln!("[pebble-jump] iTerm2 tty={}", tty);
+                if let Err(e) = activate_iterm2_session(&tty) {
+                    eprintln!("[pebble-jump] activate_iterm2_session failed: {}, falling back", e);
+                    activate_iterm2().map_err(|e| e.to_string())?;
+                }
             } else {
+                eprintln!("[pebble-jump] no tty found for pid={}, activating iTerm2 generically", pid);
                 activate_iterm2().map_err(|e| e.to_string())?;
             }
         }
-        _ => {}
+        "Terminal.app" => {
+            activate_terminal_app().map_err(|e| e.to_string())?;
+        }
+        other => {
+            eprintln!("[pebble-jump] unhandled terminal_app: {}", other);
+        }
     }
     Ok(())
 }
