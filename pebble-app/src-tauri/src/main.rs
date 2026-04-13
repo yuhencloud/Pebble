@@ -76,6 +76,7 @@ fn jump_to_terminal(instance_id: String, state: State<'_, AppState>) -> Result<(
         default_choice: None,
         wezterm_pane_id: None,
         wt_session_id: None,
+        wezterm_unix_socket: None,
     }).ok_or("No adapter found")?;
     adapter.jump_to_terminal(&instance)
 }
@@ -111,6 +112,7 @@ fn respond_permission(
         default_choice: None,
         wezterm_pane_id: None,
         wt_session_id: None,
+        wezterm_unix_socket: None,
     }).ok_or("No adapter found")?;
 
     let event_type = instance.last_hook_event.as_ref().map(|e| e.event.clone()).unwrap_or_else(|| "PermissionRequest".to_string());
@@ -217,6 +219,7 @@ fn get_instance_preview(instance_id: String, state: State<'_, AppState>) -> Resu
         default_choice: None,
         wezterm_pane_id: None,
         wt_session_id: None,
+        wezterm_unix_socket: None,
     }).ok_or("No adapter found")?;
 
     let states = state.adapter_states.lock();
@@ -267,6 +270,7 @@ fn start_state_monitor(
                     session_name: raw.session_name.clone(),
                     wezterm_pane_id: None,
                     wt_session_id: None,
+                    wezterm_unix_socket: None,
                 };
                 if let Some(existing) = map.get(&id) {
                     instance.status = existing.status.clone();
@@ -281,6 +285,9 @@ fn start_state_monitor(
                     instance.session_start = existing.session_start;
                     instance.transcript_path = existing.transcript_path.clone();
                     instance.session_name = existing.session_name.clone();
+                    instance.wezterm_pane_id = existing.wezterm_pane_id.clone();
+                    instance.wt_session_id = existing.wt_session_id.clone();
+                    instance.wezterm_unix_socket = existing.wezterm_unix_socket.clone();
                 }
 
                 let adapter = registry.adapters.first().map(|a| a.as_ref());
@@ -499,6 +506,7 @@ fn main() {
                 default_choice: payload.default_choice.clone(),
                 wezterm_pane_id: payload.wezterm_pane_id.clone(),
                 wt_session_id: payload.wt_session_id.clone(),
+                wezterm_unix_socket: payload.wezterm_unix_socket.clone(),
                     };
 
             let adapter = match registry_for_hook.find_adapter_for_event(&hook_payload) {
@@ -563,6 +571,7 @@ fn main() {
                     instance.session_name = adapter_state.session_name.clone().or(instance.session_name.clone());
                     instance.wezterm_pane_id = adapter_state.wezterm_pane_id.clone().or(instance.wezterm_pane_id.clone());
                     instance.wt_session_id = adapter_state.wt_session_id.clone().or(instance.wt_session_id.clone());
+                    instance.wezterm_unix_socket = adapter_state.wezterm_unix_socket.clone().or(instance.wezterm_unix_socket.clone());
                     states.insert(id.clone(), adapter_state);
                     map.insert(id.clone(), instance);
                 }
@@ -589,6 +598,7 @@ fn main() {
                     session_name: new_state.session_name.clone(),
                     wezterm_pane_id: new_state.wezterm_pane_id.clone(),
                     wt_session_id: new_state.wt_session_id.clone(),
+                    wezterm_unix_socket: new_state.wezterm_unix_socket.clone(),
                 };
                 adapter_states_for_hook.lock().insert(id.clone(), new_state);
                 map.insert(id, instance);
