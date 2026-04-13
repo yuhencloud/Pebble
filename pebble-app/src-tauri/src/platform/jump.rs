@@ -73,34 +73,45 @@ pub fn activate_iterm2_session(_tty: &str) -> Result<(), Box<dyn std::error::Err
 mod win {
     use std::ffi::c_void;
     use std::sync::atomic::{AtomicU32, Ordering};
-    use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
+    use windows::Win32::Foundation::{BOOL, HWND, LPARAM, TRUE};
+    use windows::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
     use windows::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetWindowThreadProcessId, IsWindowVisible, SetForegroundWindow,
+        AllowSetForegroundWindow, ASFW_ANY, EnumWindows,
+        GetWindowThreadProcessId, IsIconic, IsWindowVisible, SetForegroundWindow,
+        SetWindowPos, ShowWindow, HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOMOVE,
+        SWP_NOSIZE, SWP_SHOWWINDOW, SW_RESTORE,
     };
 
     static TARGET_PID: AtomicU32 = AtomicU32::new(0);
     static mut FOUND_HWND: *mut c_void = std::ptr::null_mut();
 
-    pub fn jump_to_terminal(pid: u32, _terminal_app: &str) -> Result<(), String> {
+    fn find_visible_window(pid: u32) -> HWND {
         TARGET_PID.store(pid, Ordering::SeqCst);
         unsafe {
             FOUND_HWND = std::ptr::null_mut();
-            let _ = EnumWindows(Some(enum_proc), LPARAM(0));
+            let _ = EnumWindows(Some(enum_proc_visible), LPARAM(0));
         }
-
-        let hwnd = HWND(unsafe { FOUND_HWND });
-        if hwnd.0.is_null() {
-            return Err("Window not found".to_string());
-        }
-        unsafe {
-            let _ = SetForegroundWindow(hwnd);
-        }
-        Ok(())
+        HWND(unsafe { FOUND_HWND })
     }
 
-    extern "system" fn enum_proc(hwnd: HWND, _lparam: LPARAM) -> BOOL {
+    fn is_valid_target(hwnd: HWND) -> bool {
         unsafe {
             if !IsWindowVisible(hwnd).as_bool() {
+                return false;
+            }
+            let mut rect = windows::Win32::Foundation::RECT::default();
+            if windows::Win32::UI::WindowsAndMessaging::GetWindowRect(hwnd, &mut rect).is_err() {
+                return false;
+            }
+            let width = rect.right - rect.left;
+            let height = rect.bottom - rect.top;
+            width > 0 && height > 0
+        }
+    }
+
+    extern "system" fn enum_proc_visible(hwnd: HWND, _lparam: LPARAM) -> BOOL {
+        unsafe {
+            if !is_valid_target(hwnd) {
                 return true.into();
             }
             let mut wpid = 0u32;
@@ -111,6 +122,73 @@ mod win {
             }
             true.into()
         }
+    }
+
+    unsafe fn switch_to_this_window(hwnd: HWND, flash: bool) {
+        if let Ok(user32) = GetModuleHandleA(windows::core::s!("user32.dll")) {
+            if let Some(proc) = GetProcAddress(user32, windows::core::s!("SwitchToThisWindow")) {
+                type SwitchFn = unsafe extern "system" fn(HWND, BOOL);
+                let switch_fn: SwitchFn = std::mem::transmute(proc);
+                switch_fn(hwnd, if flash { TRUE } else { false.into() });
+            }
+        }
+    }
+
+    /// Walk up the process tree from `start_pid`, trying to find a visible window
+    /// at each ancestor. Returns the first HWND found, or a null HWND.
+    fn find_window_walking_ancestors(start_pid: u32) -> HWND {
+        let s = sysinfo::System::new_all();
+        let mut current_pid = start_pid;
+        for _ in 0..15 {
+            let hwnd = find_visible_window(current_pid);
+            if !hwnd.0.is_null() {
+                return hwnd;
+            }
+            if let Some(proc) = s.process(sysinfo::Pid::from(current_pid as usize)) {
+                if let Some(parent) = proc.parent() {
+                    let ppid = parent.as_u32();
+                    if ppid == 0 || ppid == current_pid {
+                        break;
+                    }
+                    current_pid = ppid;
+                    continue;
+                }
+            }
+            break;
+        }
+        HWND(std::ptr::null_mut())
+    }
+
+    pub fn jump_to_terminal(pid: u32, _terminal_app: &str) -> Result<(), String> {
+        // Strategy 1: Try direct PID and detected terminal PID
+        let mut hwnd = find_visible_window(pid);
+        if hwnd.0.is_null() {
+            let terminal_pid = crate::platform::terminal::detect_terminal_pid(pid);
+            if terminal_pid != pid {
+                hwnd = find_visible_window(terminal_pid);
+            }
+        }
+        // Strategy 2: Walk the entire ancestor chain looking for any window
+        if hwnd.0.is_null() {
+            hwnd = find_window_walking_ancestors(pid);
+        }
+
+        if hwnd.0.is_null() {
+            return Err("Window not found".to_string());
+        }
+
+        unsafe {
+            let _ = AllowSetForegroundWindow(ASFW_ANY);
+            if IsIconic(hwnd).as_bool() {
+                let _ = ShowWindow(hwnd, SW_RESTORE);
+            }
+            let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW;
+            let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags);
+            let _ = SetForegroundWindow(hwnd);
+            let _ = SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, flags);
+            switch_to_this_window(hwnd, true);
+        }
+        Ok(())
     }
 }
 

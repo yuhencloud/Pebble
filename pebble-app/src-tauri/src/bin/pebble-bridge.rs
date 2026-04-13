@@ -28,7 +28,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     loop {
         if let Some(proc) = s.process(sysinfo::Pid::from(current_pid)) {
-            let name = proc.name();
+            let raw_name = proc.name();
+            let name = raw_name.strip_suffix(".exe").unwrap_or(raw_name);
             let status = proc.status();
             if status != ProcessStatus::Zombie && (name == "claude" || name == "claude-code") {
                 sender_pid = Some(current_pid as u32);

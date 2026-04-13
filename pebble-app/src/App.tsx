@@ -591,7 +591,7 @@ function App() {
             {realInstances.length === 0 && (
               <div className="empty">
                 No Claude Code instances
-                <div className="empty-sub">Start a session in iTerm2</div>
+                <div className="empty-sub">Start a session in your terminal</div>
               </div>
             )}
             {realInstances.map((inst) => (

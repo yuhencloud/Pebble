@@ -55,7 +55,7 @@ pub struct SubagentMeta {
 }
 
 pub fn list_subagents(cwd: &str, session_id: &str) -> Vec<SubagentMeta> {
-    let project_dir = cwd.replace("/", "-").replace(".", "-");
+    let project_dir = cwd.replace("\\", "-").replace("/", "-").replace(":", "-").replace(".", "-");
     let subagents_dir = dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join(".claude")

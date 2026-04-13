@@ -22,13 +22,18 @@ pub fn list_processes() -> Vec<ProcessInfo> {
         .collect()
 }
 
+fn comm_without_exe(name: &str) -> &str {
+    name.strip_suffix(".exe").unwrap_or(name)
+}
+
 pub fn find_claude_processes() -> Vec<ProcessInfo> {
     let all = list_processes();
     let mut claude_pids: HashSet<u32> = HashSet::new();
 
     for p in &all {
-        let is_claude_main = p.comm == "claude" || p.comm == "claude-code";
-        let is_node_claude = p.comm == "node" && p.args.contains("claude-code");
+        let comm = comm_without_exe(&p.comm);
+        let is_claude_main = comm == "claude" || comm == "claude-code";
+        let is_node_claude = comm == "node" && p.args.contains("claude-code");
         if is_claude_main || is_node_claude {
             claude_pids.insert(p.pid);
         }
@@ -36,8 +41,9 @@ pub fn find_claude_processes() -> Vec<ProcessInfo> {
 
     all.into_iter()
         .filter(|p| {
-            let is_claude = p.comm == "claude" || p.comm == "claude-code"
-                || (p.comm == "node" && p.args.contains("claude-code"));
+            let comm = comm_without_exe(&p.comm);
+            let is_claude = comm == "claude" || comm == "claude-code"
+                || (comm == "node" && p.args.contains("claude-code"));
             is_claude && (!claude_pids.contains(&p.ppid) || p.ppid == p.pid)
         })
         .collect()
@@ -59,6 +65,16 @@ mod tests {
         let pids: std::collections::HashSet<u32> = claudes.iter().map(|c| c.pid).collect();
         for c in &claudes {
             assert!(pids.contains(&c.pid));
+        }
+    }
+
+    #[test]
+    fn test_find_claude_on_this_machine() {
+        let claudes = find_claude_processes();
+        // Just for observation; don't assert since environment varies
+        eprintln!("Found {} claude processes", claudes.len());
+        for c in &claudes {
+            eprintln!("  pid={} comm={} args={}", c.pid, c.comm, c.args);
         }
     }
 }

@@ -172,6 +172,15 @@ fn resize_window_centered(
     }
     #[cfg(not(target_os = "macos"))]
     {
+        if let Ok(Some(monitor)) = window.current_monitor() {
+            let size = monitor.size();
+            let scale = monitor.scale_factor();
+            let logical_width = size.width as f64 / scale;
+            let x = (logical_width - width) / 2.0;
+            let _ = window.set_position(tauri::Position::Logical(
+                tauri::LogicalPosition { x, y: 0.0 }
+            ));
+        }
         window
             .set_size(tauri::Size::Logical(tauri::LogicalSize { width, height }))
             .map_err(|e| e.to_string())?;
@@ -609,13 +618,13 @@ fn main() {
                         let size = monitor.size();
                         let scale = monitor.scale_factor();
                         let logical_width = size.width as f64 / scale;
-                        let w = 300.0;
+                        let w = 324.0;
                         let x = (logical_width - w) / 2.0;
                         let _ = window.set_position(tauri::Position::Logical(
                             tauri::LogicalPosition { x, y: 0.0 }
                         ));
                         let _ = window.set_size(tauri::Size::Logical(
-                            tauri::LogicalSize { width: w, height: 52.0 }
+                            tauri::LogicalSize { width: w, height: 50.0 }
                         ));
                     }
                     let hr = hover_running.clone();
