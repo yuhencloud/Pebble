@@ -79,6 +79,12 @@ impl Adapter for ClaudeAdapter {
         if let Some(ref sn) = payload.session_name {
             state.session_name = Some(sn.clone());
         }
+        if let Some(ref pane) = payload.wezterm_pane_id {
+            state.wezterm_pane_id = Some(pane.clone());
+        }
+        if let Some(ref session) = payload.wt_session_id {
+            state.wt_session_id = Some(session.clone());
+        }
         if let Some(ref m) = payload.model {
             state.model = Some(m.clone());
         }
