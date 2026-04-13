@@ -54,6 +54,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(pid) = sender_pid {
         body["sender_pid"] = serde_json::json!(pid);
     }
+    if let Some(pane) = std::env::var("WEZTERM_PANE").ok() {
+        if !pane.trim().is_empty() {
+            body["wezterm_pane_id"] = serde_json::json!(pane.trim());
+        }
+    }
+    if let Some(session) = std::env::var("WT_SESSION").ok() {
+        if !session.trim().is_empty() {
+            body["wt_session_id"] = serde_json::json!(session.trim());
+        }
+    }
     let stdin_trimmed = stdin_data.trim();
     if !stdin_trimmed.is_empty() {
         match serde_json::from_str::<serde_json::Value>(stdin_trimmed) {
