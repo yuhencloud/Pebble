@@ -561,6 +561,8 @@ fn main() {
                     instance.session_start = adapter_state.session_start.or(instance.session_start);
                     instance.transcript_path = adapter_state.transcript_path.clone().or(instance.transcript_path.clone());
                     instance.session_name = adapter_state.session_name.clone().or(instance.session_name.clone());
+                    instance.wezterm_pane_id = adapter_state.wezterm_pane_id.clone().or(instance.wezterm_pane_id.clone());
+                    instance.wt_session_id = adapter_state.wt_session_id.clone().or(instance.wt_session_id.clone());
                     states.insert(id.clone(), adapter_state);
                     map.insert(id.clone(), instance);
                 }
