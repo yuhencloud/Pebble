@@ -64,6 +64,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             body["wt_session_id"] = serde_json::json!(session.trim());
         }
     }
+    if let Some(sock) = std::env::var("WEZTERM_UNIX_SOCKET").ok() {
+        if !sock.trim().is_empty() {
+            body["wezterm_unix_socket"] = serde_json::json!(sock.trim());
+        }
+    }
     let stdin_trimmed = stdin_data.trim();
     if !stdin_trimmed.is_empty() {
         match serde_json::from_str::<serde_json::Value>(stdin_trimmed) {
