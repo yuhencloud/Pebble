@@ -492,8 +492,10 @@ function App() {
     if (!expanded) {
       setExpanded(true);
       setDrawerVisible(true);
+      invoke("bring_to_front").catch(console.error);
     } else if (!drawerVisible) {
       setDrawerVisible(true);
+      invoke("bring_to_front").catch(console.error);
     }
   };
 

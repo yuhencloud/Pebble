@@ -92,11 +92,42 @@ mod win {
     use windows::Win32::Foundation::{BOOL, HWND, LPARAM, TRUE};
     use windows::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
     use windows::Win32::UI::WindowsAndMessaging::{
-        AllowSetForegroundWindow, ASFW_ANY, EnumWindows,
-        GetWindowThreadProcessId, IsIconic, IsWindowVisible, SetForegroundWindow,
-        SetWindowPos, ShowWindow, HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOMOVE,
-        SWP_NOSIZE, SWP_SHOWWINDOW, SW_RESTORE,
+        AllowSetForegroundWindow, ASFW_ANY, EnumWindows, GetWindowThreadProcessId,
+        IsWindowVisible, SetForegroundWindow, SetWindowPos, ShowWindow,
+        HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_RESTORE,
     };
+
+    unsafe fn get_foreground_window() -> windows::Win32::Foundation::HWND {
+        if let Ok(user32) = GetModuleHandleA(windows::core::s!("user32.dll")) {
+            if let Some(proc) = GetProcAddress(user32, windows::core::s!("GetForegroundWindow")) {
+                type Fn = unsafe extern "system" fn() -> windows::Win32::Foundation::HWND;
+                let f: Fn = std::mem::transmute(proc);
+                return f();
+            }
+        }
+        windows::Win32::Foundation::HWND(std::ptr::null_mut())
+    }
+
+    unsafe fn get_current_thread_id() -> u32 {
+        if let Ok(kernel32) = GetModuleHandleA(windows::core::s!("kernel32.dll")) {
+            if let Some(proc) = GetProcAddress(kernel32, windows::core::s!("GetCurrentThreadId")) {
+                type Fn = unsafe extern "system" fn() -> u32;
+                let f: Fn = std::mem::transmute(proc);
+                return f();
+            }
+        }
+        0
+    }
+
+    unsafe fn attach_thread_input(fg_thread: u32, current_thread: u32, attach: bool) {
+        if let Ok(user32) = GetModuleHandleA(windows::core::s!("user32.dll")) {
+            if let Some(proc) = GetProcAddress(user32, windows::core::s!("AttachThreadInput")) {
+                type Fn = unsafe extern "system" fn(u32, u32, i32) -> i32;
+                let f: Fn = std::mem::transmute(proc);
+                let _ = f(fg_thread, current_thread, if attach { 1 } else { 0 });
+            }
+        }
+    }
 
     static TARGET_PID: AtomicU32 = AtomicU32::new(0);
     static mut FOUND_HWND: *mut c_void = std::ptr::null_mut();
@@ -153,7 +184,8 @@ mod win {
     /// Walk up the process tree from `start_pid`, trying to find a visible window
     /// at each ancestor. Returns the first HWND found, or a null HWND.
     fn find_window_walking_ancestors(start_pid: u32) -> HWND {
-        let s = sysinfo::System::new_all();
+        let mut s = sysinfo::System::new();
+        s.refresh_processes();
         let mut current_pid = start_pid;
         for _ in 0..15 {
             let hwnd = find_visible_window(current_pid);
@@ -208,11 +240,7 @@ mod win {
     }
 
     fn activate_wezterm_pane(pane_id: &str, unix_socket: Option<&str>) -> Result<(), String> {
-        // First switch to the correct tab containing this pane
-        if let Err(e) = run_wezterm_cli(&["cli", "activate-tab", "--pane-id", pane_id], unix_socket) {
-            eprintln!("[pebble-jump] activate-tab failed: {}", e);
-        }
-        // Then focus the specific pane within that tab
+        // activate-pane automatically brings the pane (and its tab) to the foreground
         run_wezterm_cli(&["cli", "activate-pane", "--pane-id", pane_id], unix_socket)
     }
 
@@ -224,30 +252,32 @@ mod win {
         wezterm_unix_socket: Option<&str>,
     ) -> Result<(), String> {
         eprintln!("[pebble-jump] pid={} terminal_app={} pane={:?} socket={:?}", pid, terminal_app, wezterm_pane_id, wezterm_unix_socket);
-        // Terminal-specific precision jump (tab switch within WezTerm)
+        // Step 1: Terminal-specific precision jump (tab/pane switch within WezTerm)
         if terminal_app == "WezTerm" {
             if let Some(pane) = wezterm_pane_id {
                 match activate_wezterm_pane(pane, wezterm_unix_socket) {
-                    Ok(()) => eprintln!("[pebble-jump] WezTerm pane activated, proceeding to window activation"),
+                    Ok(()) => eprintln!("[pebble-jump] WezTerm pane activated successfully"),
                     Err(e) => eprintln!("[pebble-jump] WezTerm pane activation failed: {}", e),
                 }
             } else {
-                eprintln!("[pebble-jump] WezTerm detected but no pane_id available, falling back to window");
+                eprintln!("[pebble-jump] WezTerm detected but no pane_id available");
             }
         }
-        // For WindowsTerminal, wt_session_id could be used here once
-        // Microsoft adds a CLI flag to focus by session. For now, fall through.
 
-        // Fallback: window-level activation
+        // Step 2: Window-level activation (bring terminal window to foreground)
         let mut hwnd = find_visible_window(pid);
+        eprintln!("[pebble-jump] find_visible_window(pid={}) -> hwnd={:?}", pid, hwnd.0);
         if hwnd.0.is_null() {
             let terminal_pid = crate::platform::terminal::detect_terminal_pid(pid);
+            eprintln!("[pebble-jump] detect_terminal_pid -> {}", terminal_pid);
             if terminal_pid != pid {
                 hwnd = find_visible_window(terminal_pid);
+                eprintln!("[pebble-jump] find_visible_window(terminal_pid={}) -> hwnd={:?}", terminal_pid, hwnd.0);
             }
         }
         if hwnd.0.is_null() {
             hwnd = find_window_walking_ancestors(pid);
+            eprintln!("[pebble-jump] find_window_walking_ancestors(pid={}) -> hwnd={:?}", pid, hwnd.0);
         }
 
         if hwnd.0.is_null() {
@@ -256,14 +286,32 @@ mod win {
 
         unsafe {
             let _ = AllowSetForegroundWindow(ASFW_ANY);
-            if IsIconic(hwnd).as_bool() {
-                let _ = ShowWindow(hwnd, SW_RESTORE);
-            }
+            // Always restore the window first; some apps (e.g. WezTerm) may not
+            // report iconic state correctly, and SetForegroundWindow alone will
+            // not un-minimize a window.
+            let restored = ShowWindow(hwnd, SW_RESTORE);
+            eprintln!("[pebble-jump] ShowWindow SW_RESTORE -> {:?}", restored.0);
             let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW;
+            // Temporarily set TOPMOST to bring window above Pebble's TOPMOST layer
             let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags);
-            let _ = SetForegroundWindow(hwnd);
-            let _ = SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, flags);
+            eprintln!("[pebble-jump] SetWindowPos TOPMOST done");
+
+            // Attach thread input so SetForegroundWindow is allowed
+            let fg_hwnd = get_foreground_window();
+            let fg_thread = GetWindowThreadProcessId(fg_hwnd, None);
+            let current_thread = get_current_thread_id();
+            eprintln!("[pebble-jump] fg_hwnd={:?} fg_thread={} current_thread={}", fg_hwnd.0, fg_thread, current_thread);
+            attach_thread_input(fg_thread, current_thread, true);
+            let sf_result = SetForegroundWindow(hwnd);
+            eprintln!("[pebble-jump] SetForegroundWindow -> {:?}", sf_result.0);
+            attach_thread_input(fg_thread, current_thread, false);
+
             switch_to_this_window(hwnd, true);
+            eprintln!("[pebble-jump] switch_to_this_window done");
+
+            // Restore normal Z-order so the terminal doesn't stay permanently on top
+            let _ = SetWindowPos(hwnd, windows::Win32::UI::WindowsAndMessaging::HWND_NOTOPMOST, 0, 0, 0, 0, flags);
+            eprintln!("[pebble-jump] SetWindowPos NOTOPMOST done (restored normal z-order)");
         }
         Ok(())
     }

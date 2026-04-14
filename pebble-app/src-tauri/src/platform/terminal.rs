@@ -90,7 +90,7 @@ pub fn detect_terminal_app(pid: u32) -> String {
 
 #[cfg(target_os = "windows")]
 pub fn detect_terminal_app(pid: u32) -> String {
-    let s = System::new_all();
+    let mut s = System::new(); s.refresh_processes(); let s = s;
     let mut current_pid = sysinfo::Pid::from(pid as usize);
     let mut best_app: Option<&'static str> = None;
     for _ in 0..10 {
@@ -127,7 +127,7 @@ pub fn detect_terminal_app(pid: u32) -> String {
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn detect_terminal_app(pid: u32) -> String {
-    let s = System::new_all();
+    let mut s = System::new(); s.refresh_processes(); let s = s;
     let mut current_pid = sysinfo::Pid::from(pid as usize);
     for _ in 0..10 {
         if let Some(proc) = s.process(current_pid) {
@@ -194,7 +194,7 @@ pub fn detect_terminal_pid(pid: u32) -> u32 {
 
 #[cfg(target_os = "windows")]
 pub fn detect_terminal_pid(pid: u32) -> u32 {
-    let s = System::new_all();
+    let mut s = System::new(); s.refresh_processes(); let s = s;
     let mut current_pid = sysinfo::Pid::from(pid as usize);
     let mut best_terminal_pid = pid;
     for _ in 0..10 {
@@ -228,7 +228,7 @@ pub fn detect_terminal_pid(pid: u32) -> u32 {
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn detect_terminal_pid(pid: u32) -> u32 {
-    let s = System::new_all();
+    let mut s = System::new(); s.refresh_processes(); let s = s;
     let mut current_pid = sysinfo::Pid::from(pid as usize);
     for _ in 0..10 {
         if let Some(proc) = s.process(current_pid) {

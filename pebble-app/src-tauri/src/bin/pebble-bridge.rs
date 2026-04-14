@@ -7,6 +7,59 @@ fn main() {
     }
 }
 
+/// Query `wezterm cli list --format json` to find the pane whose cwd matches ours.
+fn detect_wezterm_pane(cwd: &str) -> Option<String> {
+    let mut cmd = std::process::Command::new("wezterm");
+    cmd.args(["cli", "list", "--format", "json"]);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    let output = cmd.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let panes: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).ok()?;
+    let cwd_normalized = normalize_path(cwd);
+
+    // Find the pane whose cwd matches our working directory
+    for pane in &panes {
+        let pane_cwd = pane.get("cwd").and_then(|v| v.as_str()).unwrap_or("");
+        // WezTerm returns cwd as file:///path/
+        let pane_path = pane_cwd
+            .strip_prefix("file:///").unwrap_or(pane_cwd)
+            .trim_end_matches('/');
+        if normalize_path(pane_path) == cwd_normalized {
+            if let Some(id) = pane.get("pane_id").and_then(|v| v.as_u64()) {
+                return Some(id.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Detect wezterm unix socket by finding the gui-sock file.
+fn detect_wezterm_socket() -> Option<String> {
+    let home = dirs::home_dir()?;
+    let sock_dir = home.join(".local/share/wezterm");
+    if sock_dir.is_dir() {
+        for entry in std::fs::read_dir(&sock_dir).ok()? {
+            if let Ok(entry) = entry {
+                let name = entry.file_name();
+                if name.to_string_lossy().starts_with("gui-sock-") {
+                    return Some(entry.path().to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn normalize_path(p: &str) -> String {
+    p.replace('\\', "/").to_lowercase()
+}
+
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let event_type = std::env::args().nth(1).unwrap_or_else(|| "unknown".to_string());
     let cwd = std::env::current_dir()
@@ -54,20 +107,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(pid) = sender_pid {
         body["sender_pid"] = serde_json::json!(pid);
     }
-    if let Some(pane) = std::env::var("WEZTERM_PANE").ok() {
-        if !pane.trim().is_empty() {
-            body["wezterm_pane_id"] = serde_json::json!(pane.trim());
-        }
+    // Try WEZTERM_PANE env var first; fall back to querying wezterm cli
+    let wezterm_pane = std::env::var("WEZTERM_PANE").ok().filter(|v| !v.trim().is_empty());
+    let wezterm_pane = wezterm_pane.or_else(|| detect_wezterm_pane(&cwd));
+    if let Some(pane) = &wezterm_pane {
+        body["wezterm_pane_id"] = serde_json::json!(pane.trim());
     }
     if let Some(session) = std::env::var("WT_SESSION").ok() {
         if !session.trim().is_empty() {
             body["wt_session_id"] = serde_json::json!(session.trim());
         }
     }
-    if let Some(sock) = std::env::var("WEZTERM_UNIX_SOCKET").ok() {
-        if !sock.trim().is_empty() {
-            body["wezterm_unix_socket"] = serde_json::json!(sock.trim());
-        }
+    let wezterm_sock = std::env::var("WEZTERM_UNIX_SOCKET").ok().filter(|v| !v.trim().is_empty());
+    let wezterm_sock = wezterm_sock.or_else(|| detect_wezterm_socket());
+    if let Some(sock) = &wezterm_sock {
+        body["wezterm_unix_socket"] = serde_json::json!(sock.trim());
     }
     let stdin_trimmed = stdin_data.trim();
     if !stdin_trimmed.is_empty() {

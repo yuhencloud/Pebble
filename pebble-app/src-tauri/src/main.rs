@@ -196,6 +196,35 @@ fn resize_window_centered(
 }
 
 #[tauri::command]
+fn bring_to_front(window: tauri::Window) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    unsafe {
+        let hwnd_val = match window.hwnd() {
+            Ok(h) => h.0 as isize,
+            Err(e) => return Err(e.to_string()),
+        };
+        if hwnd_val == 0 {
+            return Err("Invalid HWND".to_string());
+        }
+        let hwnd = windows::Win32::Foundation::HWND(hwnd_val as *mut core::ffi::c_void);
+        use windows::Win32::UI::WindowsAndMessaging::{
+            SetWindowPos, HWND_TOP, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+        };
+        SetWindowPos(
+            hwnd,
+            HWND_TOP,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
 fn get_instance_preview(instance_id: String, state: State<'_, AppState>) -> Result<String, String> {
     let map = state.instances.lock();
     let instance = map
@@ -689,7 +718,7 @@ fn main() {
             start_state_monitor(instances.clone(), adapter_states.clone(), registry.clone(), app.handle().clone());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_instances, jump_to_terminal, respond_permission, get_instance_preview, resize_window_centered])
+        .invoke_handler(tauri::generate_handler![get_instances, jump_to_terminal, respond_permission, get_instance_preview, resize_window_centered, bring_to_front])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
