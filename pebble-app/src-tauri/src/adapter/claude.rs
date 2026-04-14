@@ -25,14 +25,6 @@ impl Adapter for ClaudeAdapter {
     }
 
     fn discover_instances(&self) -> Vec<RawInstance> {
-        let ps_output_cmd = std::process::Command::new("ps")
-            .args(["-eo", "pid,ppid,comm,args"])
-            .output();
-        let ps_output = ps_output_cmd
-            .ok()
-            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-            .unwrap_or_default();
-
         let claudes = platform::discovery::find_claude_processes();
         let mut results = Vec::new();
 
@@ -42,7 +34,7 @@ impl Adapter for ClaudeAdapter {
                 .or_else(|| platform::cwd::get_process_cwd(proc.pid))
                 .unwrap_or_else(|| "Unknown".to_string());
             let session_name = session.as_ref().and_then(|s| s.name.clone());
-            let terminal = platform::terminal::detect_terminal_app(proc.pid, &ps_output);
+            let terminal = platform::terminal::detect_terminal_app(proc.pid);
             let id = format!("cc-{}", proc.pid);
 
             results.push(RawInstance {
@@ -86,6 +78,15 @@ impl Adapter for ClaudeAdapter {
 
         if let Some(ref sn) = payload.session_name {
             state.session_name = Some(sn.clone());
+        }
+        if let Some(ref pane) = payload.wezterm_pane_id {
+            state.wezterm_pane_id = Some(pane.clone());
+        }
+        if let Some(ref session) = payload.wt_session_id {
+            state.wt_session_id = Some(session.clone());
+        }
+        if let Some(ref sock) = payload.wezterm_unix_socket {
+            state.wezterm_unix_socket = Some(sock.clone());
         }
         if let Some(ref m) = payload.model {
             state.model = Some(m.clone());
@@ -203,7 +204,13 @@ impl Adapter for ClaudeAdapter {
     }
 
     fn jump_to_terminal(&self, instance: &Instance) -> Result<(), String> {
-        platform::jump::jump_to_terminal(instance.pid, &instance.terminal_app)
+        platform::jump::jump_to_terminal(
+            instance.pid,
+            &instance.terminal_app,
+            instance.wezterm_pane_id.as_deref(),
+            instance.wt_session_id.as_deref(),
+            instance.wezterm_unix_socket.as_deref(),
+        )
     }
 
     fn respond_permission(

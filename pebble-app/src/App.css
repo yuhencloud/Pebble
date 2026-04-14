@@ -281,6 +281,14 @@ body,
   flex-direction: column;
   padding: 0 20px 12px;
   -webkit-app-region: no-drag;
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.instances::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
 }
 
 .instances-inner {

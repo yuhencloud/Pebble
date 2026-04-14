@@ -30,6 +30,9 @@ pub struct HookPayload {
     pub transcript_path: Option<String>,
     pub choices: Option<Vec<String>>,
     pub default_choice: Option<String>,
+    pub wezterm_pane_id: Option<String>,
+    pub wt_session_id: Option<String>,
+    pub wezterm_unix_socket: Option<String>,
 }
 
 /// Mutable state held per instance by the adapter
@@ -46,6 +49,9 @@ pub struct AdapterState {
     pub session_start: Option<u64>,
     pub transcript_path: Option<String>,
     pub session_name: Option<String>,
+    pub wezterm_pane_id: Option<String>,
+    pub wt_session_id: Option<String>,
+    pub wezterm_unix_socket: Option<String>,
 }
 
 pub trait Adapter: Send + Sync {

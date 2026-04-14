@@ -65,7 +65,8 @@ pub fn ensure_claude_hooks_config(bridge_path: &std::path::Path) {
         settings = serde_json::json!({});
     }
 
-    let cmd = bridge_path.to_string_lossy().to_string();
+    // Use forward slashes so the command works in bash on Windows
+    let cmd = bridge_path.to_string_lossy().replace('\\', "/");
 
     let pebble_hooks = serde_json::json!({
         "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": format!("{} UserPromptSubmit", cmd) }] }],

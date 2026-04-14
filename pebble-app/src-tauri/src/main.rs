@@ -54,12 +54,13 @@ fn get_instances(state: State<'_, AppState>) -> Vec<Instance> {
 
 #[tauri::command]
 fn jump_to_terminal(instance_id: String, state: State<'_, AppState>) -> Result<(), String> {
-    let map = state.instances.lock();
-    let instance = map
-        .values()
-        .find(|i| i.id == instance_id)
-        .cloned()
-        .ok_or("Instance not found")?;
+    let instance = {
+        let map = state.instances.lock();
+        map.values()
+            .find(|i| i.id == instance_id)
+            .cloned()
+            .ok_or("Instance not found")?
+    };
     let adapter = state.registry.find_adapter_for_event(&adapter::HookPayload {
         event: "discover".to_string(),
         cwd: instance.working_directory.clone(),
@@ -74,6 +75,9 @@ fn jump_to_terminal(instance_id: String, state: State<'_, AppState>) -> Result<(
         transcript_path: None,
         choices: None,
         default_choice: None,
+        wezterm_pane_id: None,
+        wt_session_id: None,
+        wezterm_unix_socket: None,
     }).ok_or("No adapter found")?;
     adapter.jump_to_terminal(&instance)
 }
@@ -107,6 +111,9 @@ fn respond_permission(
         transcript_path: None,
         choices: None,
         default_choice: None,
+        wezterm_pane_id: None,
+        wt_session_id: None,
+        wezterm_unix_socket: None,
     }).ok_or("No adapter found")?;
 
     let event_type = instance.last_hook_event.as_ref().map(|e| e.event.clone()).unwrap_or_else(|| "PermissionRequest".to_string());
@@ -172,9 +179,47 @@ fn resize_window_centered(
     }
     #[cfg(not(target_os = "macos"))]
     {
+        if let Ok(Some(monitor)) = window.current_monitor() {
+            let size = monitor.size();
+            let scale = monitor.scale_factor();
+            let logical_width = size.width as f64 / scale;
+            let x = (logical_width - width) / 2.0;
+            let _ = window.set_position(tauri::Position::Logical(
+                tauri::LogicalPosition { x, y: 0.0 }
+            ));
+        }
         window
             .set_size(tauri::Size::Logical(tauri::LogicalSize { width, height }))
             .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn bring_to_front(window: tauri::Window) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    unsafe {
+        let hwnd_val = match window.hwnd() {
+            Ok(h) => h.0 as isize,
+            Err(e) => return Err(e.to_string()),
+        };
+        if hwnd_val == 0 {
+            return Err("Invalid HWND".to_string());
+        }
+        let hwnd = windows::Win32::Foundation::HWND(hwnd_val as *mut core::ffi::c_void);
+        use windows::Win32::UI::WindowsAndMessaging::{
+            SetWindowPos, HWND_TOP, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+        };
+        SetWindowPos(
+            hwnd,
+            HWND_TOP,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        )
+        .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -202,6 +247,9 @@ fn get_instance_preview(instance_id: String, state: State<'_, AppState>) -> Resu
         transcript_path: None,
         choices: None,
         default_choice: None,
+        wezterm_pane_id: None,
+        wt_session_id: None,
+        wezterm_unix_socket: None,
     }).ok_or("No adapter found")?;
 
     let states = state.adapter_states.lock();
@@ -250,6 +298,9 @@ fn start_state_monitor(
                     session_start: None,
                     transcript_path: None,
                     session_name: raw.session_name.clone(),
+                    wezterm_pane_id: None,
+                    wt_session_id: None,
+                    wezterm_unix_socket: None,
                 };
                 if let Some(existing) = map.get(&id) {
                     instance.status = existing.status.clone();
@@ -264,6 +315,9 @@ fn start_state_monitor(
                     instance.session_start = existing.session_start;
                     instance.transcript_path = existing.transcript_path.clone();
                     instance.session_name = existing.session_name.clone();
+                    instance.wezterm_pane_id = existing.wezterm_pane_id.clone();
+                    instance.wt_session_id = existing.wt_session_id.clone();
+                    instance.wezterm_unix_socket = existing.wezterm_unix_socket.clone();
                 }
 
                 let adapter = registry.adapters.first().map(|a| a.as_ref());
@@ -272,6 +326,16 @@ fn start_state_monitor(
                     let state = states.get(&id).cloned().unwrap_or_default();
                     instance.conversation_log = adapter.get_preview(&state);
                     instance.subagents = adapter.get_subagents(&state);
+                    // Apply pane/session data from adapter state (set by hooks)
+                    if state.wezterm_pane_id.is_some() {
+                        instance.wezterm_pane_id = state.wezterm_pane_id.clone();
+                    }
+                    if state.wt_session_id.is_some() {
+                        instance.wt_session_id = state.wt_session_id.clone();
+                    }
+                    if state.wezterm_unix_socket.is_some() {
+                        instance.wezterm_unix_socket = state.wezterm_unix_socket.clone();
+                    }
                 }
 
                 new_map.insert(id.clone(), instance);
@@ -309,6 +373,21 @@ fn start_state_monitor(
                             }
                             if inst.context_percent.is_some() {
                                 disc.context_percent = inst.context_percent;
+                            }
+                            if inst.wezterm_pane_id.is_some() {
+                                disc.wezterm_pane_id.clone_from(&inst.wezterm_pane_id);
+                            }
+                            if inst.wt_session_id.is_some() {
+                                disc.wt_session_id.clone_from(&inst.wt_session_id);
+                            }
+                            if inst.wezterm_unix_socket.is_some() {
+                                disc.wezterm_unix_socket.clone_from(&inst.wezterm_unix_socket);
+                            }
+                            if inst.pending_permission.is_some() {
+                                disc.pending_permission.clone_from(&inst.pending_permission);
+                            }
+                            if inst.status != "waiting" {
+                                disc.status.clone_from(&inst.status);
                             }
                             merged = true;
                             break;
@@ -350,6 +429,7 @@ fn start_state_monitor(
     });
 }
 
+#[cfg(target_os = "macos")]
 unsafe fn setup_notch_overlay(window: &tauri::WebviewWindow) {
     if let Ok(raw) = window.ns_window() {
         let ns_window: id = raw as id;
@@ -411,6 +491,38 @@ unsafe fn start_hover_tracker(window: tauri::WebviewWindow, running: Arc<std::sy
     });
 }
 
+#[cfg(target_os = "windows")]
+fn start_hover_tracker(window: tauri::WebviewWindow, running: Arc<std::sync::atomic::AtomicBool>) {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, GetWindowRect};
+    thread::spawn(move || {
+        let mut was_inside = false;
+        while running.load(std::sync::atomic::Ordering::Relaxed) {
+            thread::sleep(Duration::from_millis(60));
+            unsafe {
+                let mut pt = windows::Win32::Foundation::POINT::default();
+                let mut rect = RECT::default();
+                let hwnd_val = match window.hwnd() {
+                    Ok(h) => h.0 as isize,
+                    Err(_) => continue,
+                };
+                if hwnd_val == 0 {
+                    continue;
+                }
+                let hwnd = windows::Win32::Foundation::HWND(hwnd_val as *mut core::ffi::c_void);
+                if GetCursorPos(&mut pt).is_ok() && GetWindowRect(hwnd, &mut rect).is_ok() {
+                    let inside = pt.x >= rect.left && pt.x <= rect.right
+                        && pt.y >= rect.top && pt.y <= rect.bottom;
+                    if inside != was_inside {
+                        was_inside = inside;
+                        let _ = window.emit("pebble-hover", inside);
+                    }
+                }
+            }
+        }
+    });
+}
+
 fn main() {
     let mut registry = AdapterRegistry::new();
     registry.register(std::sync::Arc::new(adapter::claude::ClaudeAdapter::new()));
@@ -447,6 +559,9 @@ fn main() {
                 transcript_path: payload.transcript_path.clone(),
                 choices: payload.choices.clone(),
                 default_choice: payload.default_choice.clone(),
+                wezterm_pane_id: payload.wezterm_pane_id.clone(),
+                wt_session_id: payload.wt_session_id.clone(),
+                wezterm_unix_socket: payload.wezterm_unix_socket.clone(),
                     };
 
             let adapter = match registry_for_hook.find_adapter_for_event(&hook_payload) {
@@ -509,6 +624,9 @@ fn main() {
                     instance.session_start = adapter_state.session_start.or(instance.session_start);
                     instance.transcript_path = adapter_state.transcript_path.clone().or(instance.transcript_path.clone());
                     instance.session_name = adapter_state.session_name.clone().or(instance.session_name.clone());
+                    instance.wezterm_pane_id = adapter_state.wezterm_pane_id.clone().or(instance.wezterm_pane_id.clone());
+                    instance.wt_session_id = adapter_state.wt_session_id.clone().or(instance.wt_session_id.clone());
+                    instance.wezterm_unix_socket = adapter_state.wezterm_unix_socket.clone().or(instance.wezterm_unix_socket.clone());
                     states.insert(id.clone(), adapter_state);
                     map.insert(id.clone(), instance);
                 }
@@ -533,6 +651,9 @@ fn main() {
                     session_start: new_state.session_start,
                     transcript_path: new_state.transcript_path.clone(),
                     session_name: new_state.session_name.clone(),
+                    wezterm_pane_id: new_state.wezterm_pane_id.clone(),
+                    wt_session_id: new_state.wt_session_id.clone(),
+                    wezterm_unix_socket: new_state.wezterm_unix_socket.clone(),
                 };
                 adapter_states_for_hook.lock().insert(id.clone(), new_state);
                 map.insert(id, instance);
@@ -576,21 +697,28 @@ fn main() {
                         let size = monitor.size();
                         let scale = monitor.scale_factor();
                         let logical_width = size.width as f64 / scale;
-                        let w = 300.0;
+                        let w = 324.0;
                         let x = (logical_width - w) / 2.0;
                         let _ = window.set_position(tauri::Position::Logical(
                             tauri::LogicalPosition { x, y: 0.0 }
                         ));
                         let _ = window.set_size(tauri::Size::Logical(
-                            tauri::LogicalSize { width: w, height: 52.0 }
+                            tauri::LogicalSize { width: w, height: 50.0 }
                         ));
                     }
+                    let hr = hover_running.clone();
+                    window.on_window_event(move |event| {
+                        if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+                            hr.store(false, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    });
+                    start_hover_tracker(window, hover_running.clone());
                 }
             }
             start_state_monitor(instances.clone(), adapter_states.clone(), registry.clone(), app.handle().clone());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_instances, jump_to_terminal, respond_permission, get_instance_preview, resize_window_centered])
+        .invoke_handler(tauri::generate_handler![get_instances, jump_to_terminal, respond_permission, get_instance_preview, resize_window_centered, bring_to_front])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
