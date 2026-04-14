@@ -268,6 +268,7 @@ fn start_state_monitor(
     app_handle: tauri::AppHandle,
 ) {
     let mut notified_map: HashMap<String, bool> = HashMap::new();
+    let mut transcript_mtimes: HashMap<String, u64> = HashMap::new();
 
     thread::spawn(move || {
         loop {
@@ -325,10 +326,35 @@ fn start_state_monitor(
 
                 let adapter = registry.adapters.first().map(|a| a.as_ref());
                 if let Some(adapter) = adapter {
-                    let states = adapter_states.lock();
-                    let mut state = states.get(&id).cloned().unwrap_or_default();
+                    let mut state = {
+                        let states = adapter_states.lock();
+                        states.get(&id).cloned().unwrap_or_default()
+                    };
+
+                    // Check transcript mtime for updates
+                    if let Some(ref tp) = state.transcript_path {
+                        let current_mtime = std::fs::metadata(tp)
+                            .and_then(|m| m.modified())
+                            .ok()
+                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                            .map(|d| d.as_secs());
+                        if let Some(mtime) = current_mtime {
+                            let changed = transcript_mtimes.get(tp).copied().unwrap_or(0) < mtime;
+                            if changed {
+                                transcript_mtimes.insert(tp.clone(), mtime);
+                                let exchange = transcript::read_last_exchange(tp);
+                                if let Some(user) = exchange.0 {
+                                    state.latest_user_preview = Some(user);
+                                }
+                                if let Some(assistant) = exchange.1 {
+                                    state.latest_assistant_preview = Some(assistant);
+                                }
+                                adapter_states.lock().insert(id.clone(), state.clone());
+                            }
+                        }
+                    }
+
                     instance.conversation_log = adapter.get_preview(&state);
-                    // Apply pane/session data from adapter state (set by hooks)
                     if state.wezterm_pane_id.is_some() {
                         instance.wezterm_pane_id = state.wezterm_pane_id.clone();
                     }
