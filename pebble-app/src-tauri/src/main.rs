@@ -392,6 +392,9 @@ fn start_state_monitor(
                             if inst.pending_permission.is_some() {
                                 disc.pending_permission.clone_from(&inst.pending_permission);
                             }
+                            if !inst.subagents.is_empty() {
+                                disc.subagents.clone_from(&inst.subagents);
+                            }
                             if inst.status != "waiting" {
                                 disc.status.clone_from(&inst.status);
                             }
@@ -651,7 +654,7 @@ fn main() {
                     last_activity: now_secs,
                     pending_permission: new_state.pending_permission.clone(),
                     last_hook_event: new_state.last_hook_event.clone(),
-                    subagents: Vec::new(),
+                    subagents: adapter.get_subagents(&new_state),
                     model: new_state.model.clone(),
                     permission_mode: new_state.permission_mode.clone(),
                     context_percent: new_state.context_percent,
