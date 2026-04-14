@@ -235,7 +235,7 @@ function InstanceCard({
   inst: Instance;
   onClick: () => void;
   onRespond?: (choice: string) => void;
-  onSubagentClick?: (id: string) => void;
+  onSubagentClick?: () => void;
 }) {
   const [responding, setResponding] = useState(false);
   const [expandedSubagents, setExpandedSubagents] = useState(false);
@@ -322,7 +322,7 @@ function InstanceCard({
               e.stopPropagation();
               setExpandedSubagents((v) => !v);
             }}
-            title={inst.subagents.map((s) => `${s.name} ${s.status}`).join("; ")}
+            title={inst.subagents.map((s) => s.name).join("; ")}
           >
             <span>Subagents ({inst.subagents.length})</span>
             <span className="subagents-chevron">{expandedSubagents ? "▲" : "▼"}</span>
@@ -330,12 +330,12 @@ function InstanceCard({
           {expandedSubagents && (
             <div className="subagents-list">
               {inst.subagents.map((sub) => {
-                const fullText = `${sub.name} ${sub.status}`;
+                const fullText = sub.name;
                 return (
                   <div
                     key={sub.id}
                     className={`subagent subagent--${sub.status}`}
-                    onClick={() => onSubagentClick?.(sub.id)}
+                    onClick={() => onSubagentClick?.()}
                     title={fullText}
                   >
                     <StatusDot status={sub.status} />
@@ -629,7 +629,7 @@ function App() {
                 inst={inst}
                 onClick={() => jumpToTerminal(inst.id)}
                 onRespond={(choice) => respondPermission(inst.id, choice)}
-                onSubagentClick={(id) => jumpToTerminal(id)}
+                onSubagentClick={() => jumpToTerminal(inst.id)}
               />
             ))}
           </div>

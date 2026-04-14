@@ -111,3 +111,27 @@ No frontend protocol changes are required. `get_subagents` continues to return `
 4. `pebble-app/src-tauri/src/hook/bridge.rs` — append `SubagentStart` and `SubagentStop` to auto-configured hooks
 5. `pebble-app/src-tauri/src/session.rs` — optionally expose a helper to read `.jsonl` mtime alongside `list_subagents`
 6. `pebble-app/src-tauri/src/main.rs` — ensure hook payload mapping forwards `agent_id` and `agent_type`
+7. `pebble-app/src/App.tsx` — add collapsible subagent list with expand/collapse toggle and tooltips
+
+## 9. Subagent 列表的收起/展开
+
+**默认状态**：收起。只显示一行，例如：
+
+```
+Subagents (2) ▼
+```
+
+**展开状态**：显示完整的 subagent 列表，例如：
+
+```
+Subagents (2) ▲
+• superpowers:code-reviewer 代码质量审查 Task 1 executing
+• Explore 搜索相关代码 executing
+```
+
+**行为细节**：
+- 点击 "Subagents (N)" 这一行切换展开/收起状态
+- 状态是**每个 instance 卡片独立的**（不能用全局状态，否则展开一个全部展开了）
+- 前端用组件内的 `useState` 维护即可，不需要和后端通信
+- 展开/收起的动画可以不做，先直接显隐
+- **Tooltip**：收起态的摘要行以及展开态的每个 subagent 行，如果文本可能被截断，都需添加 `title` 属性显示完整内容

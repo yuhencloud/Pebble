@@ -37,7 +37,7 @@ pub struct HookPayload {
     pub agent_type: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SubagentState {
     pub id: String,
     pub name: String,
@@ -110,7 +110,7 @@ pub trait Adapter: Send + Sync {
     fn get_preview(&self, state: &AdapterState) -> Vec<String>;
 
     /// Return subagent list (may read files dynamically)
-    fn get_subagents(&self, state: &AdapterState) -> Vec<SubagentInfo>;
+    fn get_subagents(&self, state: &mut AdapterState) -> Vec<SubagentInfo>;
 
     /// Focus the terminal window for this instance
     fn jump_to_terminal(&self, instance: &Instance) -> Result<(), String>;

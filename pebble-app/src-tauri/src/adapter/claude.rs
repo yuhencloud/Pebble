@@ -68,13 +68,11 @@ impl Adapter for ClaudeAdapter {
                         description: None,
                         started_at: now_secs,
                     });
-                    state.subagents_bootstrapped = true;
                 }
             }
             "SubagentStop" => {
                 if let Some(id) = payload.agent_id.as_ref() {
                     state.subagents.remove(id);
-                    state.subagents_bootstrapped = true;
                 }
             }
             _ => {}
@@ -91,7 +89,6 @@ impl Adapter for ClaudeAdapter {
                 state.transcript_path = Some(tp.clone());
                 // One-time bootstrap of subagents from filesystem when transcript_path is first bound
                 if !state.subagents_bootstrapped {
-                    state.subagents_bootstrapped = true;
                     let sid = std::path::Path::new(tp)
                         .file_stem()
                         .and_then(|s| s.to_str())
@@ -108,6 +105,7 @@ impl Adapter for ClaudeAdapter {
                             });
                         }
                     }
+                    state.subagents_bootstrapped = true;
                 }
             }
             if state.session_start.is_none() {
@@ -223,18 +221,17 @@ impl Adapter for ClaudeAdapter {
         }
     }
 
-    fn get_subagents(&self, state: &AdapterState) -> Vec<SubagentInfo> {
+    fn get_subagents(&self, state: &mut AdapterState) -> Vec<SubagentInfo> {
         let now_secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
 
-        // 1. Timeout cleanup
-        let mut cleaned = state.subagents.clone();
+        // 1. Timeout cleanup on canonical state
         const SUBAGENT_TIMEOUT_SECS: u64 = 600;
-        cleaned.retain(|_, s| now_secs.saturating_sub(s.started_at) <= SUBAGENT_TIMEOUT_SECS);
+        state.subagents.retain(|_, s| now_secs.saturating_sub(s.started_at) <= SUBAGENT_TIMEOUT_SECS);
 
-        cleaned.into_values().map(|s| {
+        state.subagents.values().cloned().map(|s| {
             let full_name = if let Some(ref d) = s.description {
                 format!("{}: {}", s.name, d)
             } else {
@@ -369,6 +366,44 @@ mod tests {
         };
         adapter.handle_hook(&stop_payload, &mut state, &mut std::collections::HashMap::new());
         assert!(state.subagents.is_empty());
+    }
+
+    #[test]
+    fn test_subagent_bootstrap_from_transcript_path() {
+        let adapter = ClaudeAdapter::new();
+        let mut state = AdapterState::default();
+
+        let payload = HookPayload {
+            event: "UserPromptSubmit".to_string(),
+            cwd: "/tmp".to_string(),
+            timestamp: 0,
+            tool_name: None,
+            tool_input: None,
+            permission_mode: None,
+            tool_use_id: None,
+            model: None,
+            context_percent: None,
+            session_name: None,
+            transcript_path: Some("/tmp/transcript.jsonl".to_string()),
+            choices: None,
+            default_choice: None,
+            wezterm_pane_id: None,
+            wt_session_id: None,
+            wezterm_unix_socket: None,
+            agent_id: None,
+            agent_type: None,
+        };
+
+        assert!(!state.subagents_bootstrapped);
+        adapter.handle_hook(&payload, &mut state, &mut std::collections::HashMap::new());
+        assert!(state.subagents_bootstrapped);
+        assert_eq!(state.transcript_path, Some("/tmp/transcript.jsonl".to_string()));
+
+        // Second hook with same transcript_path should not re-bootstrap
+        let before = state.subagents.clone();
+        adapter.handle_hook(&payload, &mut state, &mut std::collections::HashMap::new());
+        assert!(state.subagents_bootstrapped);
+        assert_eq!(state.subagents, before);
     }
 }
 

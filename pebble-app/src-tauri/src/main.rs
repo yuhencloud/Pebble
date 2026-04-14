@@ -135,9 +135,6 @@ fn respond_permission(
                 .unwrap_or_else(|| instance_id.clone())
         });
 
-    eprintln!("[pebble-respond] instance_id={} event={} choice={} key={} body={}",
-        instance_id, event_type, choice, key, response_json);
-
     permission_store.set(key.clone(), response_json.clone());
 
     {
@@ -329,9 +326,8 @@ fn start_state_monitor(
                 let adapter = registry.adapters.first().map(|a| a.as_ref());
                 if let Some(adapter) = adapter {
                     let states = adapter_states.lock();
-                    let state = states.get(&id).cloned().unwrap_or_default();
+                    let mut state = states.get(&id).cloned().unwrap_or_default();
                     instance.conversation_log = adapter.get_preview(&state);
-                    instance.subagents = adapter.get_subagents(&state);
                     // Apply pane/session data from adapter state (set by hooks)
                     if state.wezterm_pane_id.is_some() {
                         instance.wezterm_pane_id = state.wezterm_pane_id.clone();
@@ -342,6 +338,7 @@ fn start_state_monitor(
                     if state.wezterm_unix_socket.is_some() {
                         instance.wezterm_unix_socket = state.wezterm_unix_socket.clone();
                     }
+                    instance.subagents = adapter.get_subagents(&mut state);
                 }
 
                 new_map.insert(id.clone(), instance);
@@ -393,7 +390,11 @@ fn start_state_monitor(
                                 disc.pending_permission.clone_from(&inst.pending_permission);
                             }
                             if !inst.subagents.is_empty() {
-                                disc.subagents.clone_from(&inst.subagents);
+                                for sa in &inst.subagents {
+                                    if !disc.subagents.iter().any(|d| d.id == sa.id) {
+                                        disc.subagents.push(sa.clone());
+                                    }
+                                }
                             }
                             if inst.status != "waiting" {
                                 disc.status.clone_from(&inst.status);
@@ -638,6 +639,7 @@ fn main() {
                     instance.wezterm_pane_id = adapter_state.wezterm_pane_id.clone().or(instance.wezterm_pane_id.clone());
                     instance.wt_session_id = adapter_state.wt_session_id.clone().or(instance.wt_session_id.clone());
                     instance.wezterm_unix_socket = adapter_state.wezterm_unix_socket.clone().or(instance.wezterm_unix_socket.clone());
+                    instance.subagents = adapter.get_subagents(&mut adapter_state);
                     states.insert(id.clone(), adapter_state);
                     map.insert(id.clone(), instance);
                 }
@@ -654,7 +656,7 @@ fn main() {
                     last_activity: now_secs,
                     pending_permission: new_state.pending_permission.clone(),
                     last_hook_event: new_state.last_hook_event.clone(),
-                    subagents: adapter.get_subagents(&new_state),
+                    subagents: adapter.get_subagents(&mut new_state),
                     model: new_state.model.clone(),
                     permission_mode: new_state.permission_mode.clone(),
                     context_percent: new_state.context_percent,
