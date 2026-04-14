@@ -68,11 +68,13 @@ impl Adapter for ClaudeAdapter {
                         description: None,
                         started_at: now_secs,
                     });
+                    state.subagents_bootstrapped = true;
                 }
             }
             "SubagentStop" => {
                 if let Some(id) = payload.agent_id.as_ref() {
                     state.subagents.remove(id);
+                    state.subagents_bootstrapped = true;
                 }
             }
             _ => {}
@@ -87,6 +89,26 @@ impl Adapter for ClaudeAdapter {
         if let Some(ref tp) = payload.transcript_path {
             if state.transcript_path.as_ref() != Some(tp) {
                 state.transcript_path = Some(tp.clone());
+                // One-time bootstrap of subagents from filesystem when transcript_path is first bound
+                if !state.subagents_bootstrapped {
+                    state.subagents_bootstrapped = true;
+                    let sid = std::path::Path::new(tp)
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or(tp);
+                    let cwd = payload.cwd.clone();
+                    if !cwd.is_empty() {
+                        let metas = crate::session::list_subagents_with_mtime(&cwd, sid);
+                        for (m, started_at) in metas {
+                            state.subagents.insert(m.agent_id.clone(), SubagentState {
+                                id: m.agent_id,
+                                name: m.agent_type,
+                                description: m.description,
+                                started_at,
+                            });
+                        }
+                    }
+                }
             }
             if state.session_start.is_none() {
                 if let Some(start) = transcript::read_session_start_from_transcript(tp) {
@@ -211,28 +233,6 @@ impl Adapter for ClaudeAdapter {
         let mut cleaned = state.subagents.clone();
         const SUBAGENT_TIMEOUT_SECS: u64 = 600;
         cleaned.retain(|_, s| now_secs.saturating_sub(s.started_at) <= SUBAGENT_TIMEOUT_SECS);
-
-        // 2. File fallback for Pebble restarts
-        if let Some(ref session_id) = state.transcript_path {
-            let sid = std::path::Path::new(session_id)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or(session_id);
-            let cwd = state.last_hook_event.as_ref().map(|e| e.cwd.clone()).unwrap_or_default();
-            if !cwd.is_empty() {
-                let metas = crate::session::list_subagents_with_mtime(&cwd, sid);
-                for (m, started_at) in metas {
-                    if !cleaned.contains_key(&m.agent_id) {
-                        cleaned.insert(m.agent_id.clone(), SubagentState {
-                            id: m.agent_id,
-                            name: m.agent_type,
-                            description: m.description,
-                            started_at,
-                        });
-                    }
-                }
-            }
-        }
 
         cleaned.into_values().map(|s| {
             let full_name = if let Some(ref d) = s.description {

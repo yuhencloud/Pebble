@@ -63,6 +63,7 @@ pub struct AdapterState {
     pub wt_session_id: Option<String>,
     pub wezterm_unix_socket: Option<String>,
     pub subagents: std::collections::HashMap<String, SubagentState>,
+    pub subagents_bootstrapped: bool,
 }
 
 impl Default for AdapterState {
@@ -83,6 +84,7 @@ impl Default for AdapterState {
             wt_session_id: None,
             wezterm_unix_socket: None,
             subagents: std::collections::HashMap::new(),
+            subagents_bootstrapped: false,
         }
     }
 }
