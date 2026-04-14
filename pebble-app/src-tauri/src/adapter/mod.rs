@@ -33,6 +33,8 @@ pub struct HookPayload {
     pub wezterm_pane_id: Option<String>,
     pub wt_session_id: Option<String>,
     pub wezterm_unix_socket: Option<String>,
+    pub agent_id: Option<String>,
+    pub agent_type: Option<String>,
 }
 
 #[derive(Debug, Clone)]

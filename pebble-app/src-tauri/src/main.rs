@@ -78,6 +78,8 @@ fn jump_to_terminal(instance_id: String, state: State<'_, AppState>) -> Result<(
         wezterm_pane_id: None,
         wt_session_id: None,
         wezterm_unix_socket: None,
+        agent_id: None,
+        agent_type: None,
     }).ok_or("No adapter found")?;
     adapter.jump_to_terminal(&instance)
 }
@@ -114,6 +116,8 @@ fn respond_permission(
         wezterm_pane_id: None,
         wt_session_id: None,
         wezterm_unix_socket: None,
+        agent_id: None,
+        agent_type: None,
     }).ok_or("No adapter found")?;
 
     let event_type = instance.last_hook_event.as_ref().map(|e| e.event.clone()).unwrap_or_else(|| "PermissionRequest".to_string());
@@ -250,6 +254,8 @@ fn get_instance_preview(instance_id: String, state: State<'_, AppState>) -> Resu
         wezterm_pane_id: None,
         wt_session_id: None,
         wezterm_unix_socket: None,
+        agent_id: None,
+        agent_type: None,
     }).ok_or("No adapter found")?;
 
     let states = state.adapter_states.lock();
@@ -562,6 +568,8 @@ fn main() {
                 wezterm_pane_id: payload.wezterm_pane_id.clone(),
                 wt_session_id: payload.wt_session_id.clone(),
                 wezterm_unix_socket: payload.wezterm_unix_socket.clone(),
+                agent_id: payload.agent_id.clone(),
+                agent_type: payload.agent_type.clone(),
                     };
 
             let adapter = match registry_for_hook.find_adapter_for_event(&hook_payload) {

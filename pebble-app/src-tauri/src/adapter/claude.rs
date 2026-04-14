@@ -1,4 +1,4 @@
-use crate::adapter::{Adapter, AdapterState, HookPayload, RawInstance};
+use crate::adapter::{Adapter, AdapterState, HookPayload, RawInstance, SubagentState};
 use crate::platform;
 use crate::session;
 use crate::transcript;
@@ -55,6 +55,29 @@ impl Adapter for ClaudeAdapter {
         state: &mut AdapterState,
         _instances: &mut HashMap<String, Instance>,
     ) {
+        match payload.event.as_str() {
+            "SubagentStart" => {
+                if let (Some(id), Some(agent_type)) = (payload.agent_id.as_ref(), payload.agent_type.as_ref()) {
+                    let now_secs = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs();
+                    state.subagents.insert(id.clone(), SubagentState {
+                        id: id.clone(),
+                        name: agent_type.clone(),
+                        description: None,
+                        started_at: now_secs,
+                    });
+                }
+            }
+            "SubagentStop" => {
+                if let Some(id) = payload.agent_id.as_ref() {
+                    state.subagents.remove(id);
+                }
+            }
+            _ => {}
+        }
+
         let now_secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -179,6 +202,17 @@ impl Adapter for ClaudeAdapter {
     }
 
     fn get_subagents(&self, state: &AdapterState) -> Vec<SubagentInfo> {
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // 1. Timeout cleanup
+        let mut cleaned = state.subagents.clone();
+        const SUBAGENT_TIMEOUT_SECS: u64 = 600;
+        cleaned.retain(|_, s| now_secs.saturating_sub(s.started_at) <= SUBAGENT_TIMEOUT_SECS);
+
+        // 2. File fallback for Pebble restarts
         if let Some(ref session_id) = state.transcript_path {
             let sid = std::path::Path::new(session_id)
                 .file_stem()
@@ -186,15 +220,32 @@ impl Adapter for ClaudeAdapter {
                 .unwrap_or(session_id);
             let cwd = state.last_hook_event.as_ref().map(|e| e.cwd.clone()).unwrap_or_default();
             if !cwd.is_empty() {
-                let metas = session::list_subagents(&cwd, sid);
-                return metas.into_iter().map(|m| SubagentInfo {
-                    id: m.agent_id,
-                    status: "executing".to_string(),
-                    name: m.agent_type,
-                }).collect();
+                let metas = crate::session::list_subagents_with_mtime(&cwd, sid);
+                for (m, started_at) in metas {
+                    if !cleaned.contains_key(&m.agent_id) {
+                        cleaned.insert(m.agent_id.clone(), SubagentState {
+                            id: m.agent_id,
+                            name: m.agent_type,
+                            description: m.description,
+                            started_at,
+                        });
+                    }
+                }
             }
         }
-        Vec::new()
+
+        cleaned.into_values().map(|s| {
+            let full_name = if let Some(ref d) = s.description {
+                format!("{} {}", s.name, d)
+            } else {
+                s.name.clone()
+            };
+            SubagentInfo {
+                id: s.id,
+                status: "executing".to_string(),
+                name: full_name,
+            }
+        }).collect()
     }
 
     fn jump_to_terminal(&self, instance: &Instance) -> Result<(), String> {
@@ -274,6 +325,50 @@ impl ClaudeAdapter {
         } else {
             Err(format!("Invalid permission choice: {}", choice))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_subagent_start_stop_lifecycle() {
+        let adapter = ClaudeAdapter::new();
+        let mut state = AdapterState::default();
+
+        let payload = HookPayload {
+            event: "SubagentStart".to_string(),
+            cwd: "/tmp".to_string(),
+            timestamp: 0,
+            tool_name: None,
+            tool_input: None,
+            permission_mode: None,
+            tool_use_id: None,
+            model: None,
+            context_percent: None,
+            session_name: None,
+            transcript_path: None,
+            choices: None,
+            default_choice: None,
+            wezterm_pane_id: None,
+            wt_session_id: None,
+            wezterm_unix_socket: None,
+            agent_id: Some("agent-123".to_string()),
+            agent_type: Some("Explore".to_string()),
+        };
+
+        adapter.handle_hook(&payload, &mut state, &mut std::collections::HashMap::new());
+        assert_eq!(state.subagents.len(), 1);
+        assert!(state.subagents.contains_key("agent-123"));
+
+        let stop_payload = HookPayload {
+            event: "SubagentStop".to_string(),
+            agent_id: Some("agent-123".to_string()),
+            ..payload
+        };
+        adapter.handle_hook(&stop_payload, &mut state, &mut std::collections::HashMap::new());
+        assert!(state.subagents.is_empty());
     }
 }
 
