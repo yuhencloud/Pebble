@@ -21,7 +21,7 @@
         "maximizable": false,
         "minimizable": false,
         "closable": true,
-        "alwaysOnTop": false,
+        "alwaysOnTop": true,
         "decorations": false,
         "shadow": false,
         "transparent": true,
