@@ -238,6 +238,7 @@ function InstanceCard({
   onSubagentClick?: (id: string) => void;
 }) {
   const [responding, setResponding] = useState(false);
+  const [expandedSubagents, setExpandedSubagents] = useState(false);
 
   const displayPreview = useMemo(() => {
     if (inst.conversation_log && inst.conversation_log.length > 0) {
@@ -315,20 +316,35 @@ function InstanceCard({
 
       {inst.subagents.length > 0 && (
         <div className="subagents">
-          <div className="subagents-title">Subagents ({inst.subagents.length})</div>
-          <div className="subagents-list">
-            {inst.subagents.map((sub) => (
-              <div
-                key={sub.id}
-                className={`subagent subagent--${sub.status}`}
-                onClick={() => onSubagentClick?.(sub.id)}
-              >
-                <StatusDot status={sub.status} />
-                <span className="subagent-name">{sub.name}</span>
-                <span className="subagent-status">{sub.status === "completed" ? "Done" : sub.status}</span>
-              </div>
-            ))}
+          <div
+            className="subagents-title subagents-title--clickable"
+            onClick={(e) => {
+              e.stopPropagation();
+              setExpandedSubagents((v) => !v);
+            }}
+            title={inst.subagents.map((s) => `${s.name} ${s.status}`).join("; ")}
+          >
+            Subagents ({inst.subagents.length}) {expandedSubagents ? "▲" : "▼"}
           </div>
+          {expandedSubagents && (
+            <div className="subagents-list">
+              {inst.subagents.map((sub) => {
+                const fullText = `${sub.name} ${sub.status}`;
+                return (
+                  <div
+                    key={sub.id}
+                    className={`subagent subagent--${sub.status}`}
+                    onClick={() => onSubagentClick?.(sub.id)}
+                    title={fullText}
+                  >
+                    <StatusDot status={sub.status} />
+                    <span className="subagent-name">{sub.name}</span>
+                    <span className="subagent-status">{sub.status === "completed" ? "Done" : sub.status}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
     </div>
