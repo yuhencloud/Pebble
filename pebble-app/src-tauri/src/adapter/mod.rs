@@ -64,6 +64,8 @@ pub struct AdapterState {
     pub wezterm_unix_socket: Option<String>,
     pub subagents: std::collections::HashMap<String, SubagentState>,
     pub subagents_bootstrapped: bool,
+    pub latest_user_preview: Option<String>,
+    pub latest_assistant_preview: Option<String>,
 }
 
 impl Default for AdapterState {
@@ -85,6 +87,8 @@ impl Default for AdapterState {
             wezterm_unix_socket: None,
             subagents: std::collections::HashMap::new(),
             subagents_bootstrapped: false,
+            latest_user_preview: None,
+            latest_assistant_preview: None,
         }
     }
 }
