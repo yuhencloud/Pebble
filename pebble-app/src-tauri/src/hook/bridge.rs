@@ -74,7 +74,8 @@ pub fn ensure_claude_hooks_config(bridge_path: &std::path::Path) {
         "PostToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": format!("{} PostToolUse", cmd) }] }],
         "PostToolUseFailure": [{ "matcher": "*", "hooks": [{ "type": "command", "command": format!("{} PostToolUseFailure", cmd) }] }],
         "PermissionRequest": [{ "matcher": "*", "hooks": [{ "type": "command", "command": format!("{} PermissionRequest", cmd), "timeout": 300 }] }],
-        "Stop": [{ "hooks": [{ "type": "command", "command": format!("{} Stop", cmd) }] }]
+        "Stop": [{ "hooks": [{ "type": "command", "command": format!("{} Stop", cmd) }] }],
+        "SessionStart": [{ "hooks": [{ "type": "command", "command": format!("{} SessionStart", cmd) }] }]
     });
 
     let existing_hooks = settings.get("hooks").cloned().unwrap_or(serde_json::json!({}));
