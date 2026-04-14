@@ -79,15 +79,9 @@ impl Adapter for ClaudeAdapter {
         if let Some(ref sn) = payload.session_name {
             state.session_name = Some(sn.clone());
         }
-        if let Some(ref pane) = payload.wezterm_pane_id {
-            state.wezterm_pane_id = Some(pane.clone());
-        }
-        if let Some(ref session) = payload.wt_session_id {
-            state.wt_session_id = Some(session.clone());
-        }
-        if let Some(ref sock) = payload.wezterm_unix_socket {
-            state.wezterm_unix_socket = Some(sock.clone());
-        }
+        Self::update_opt_string(&mut state.wezterm_pane_id, payload.wezterm_pane_id.as_ref());
+        Self::update_opt_string(&mut state.wt_session_id, payload.wt_session_id.as_ref());
+        Self::update_opt_string(&mut state.wezterm_unix_socket, payload.wezterm_unix_socket.as_ref());
         if let Some(ref m) = payload.model {
             state.model = Some(m.clone());
         }
@@ -256,6 +250,19 @@ impl Adapter for ClaudeAdapter {
 }
 
 impl ClaudeAdapter {
+    /// Updates an optional string field using a deterministic policy:
+    /// - None + Some(v)      -> Set(v)
+    /// - Some(old) + Some(v) where old == v -> Ignore
+    /// - Some(old) + Some(v) where old != v -> Overwrite(v)
+    fn update_opt_string(current: &mut Option<String>, incoming: Option<&String>) {
+        if let Some(v) = incoming {
+            match current {
+                Some(old) if old == v => {}
+                _ => *current = Some(v.clone()),
+            }
+        }
+    }
+
     fn normalize_permission_choice(choice: &str) -> Result<&'static str, String> {
         if choice.eq_ignore_ascii_case("allow")
             || choice.eq_ignore_ascii_case("allow for this conversation")
