@@ -15,6 +15,7 @@ interface PendingPermission {
   prompt: string;
   choices: string[];
   default_choice?: string;
+  details?: string;
 }
 
 interface HookEvent {
@@ -294,7 +295,14 @@ function InstanceCard({
 
       {inst.status === "needs_permission" && inst.pending_permission && (
         <div className="permission-card" onClick={(e) => e.stopPropagation()}>
-          <div className="permission-prompt">{inst.pending_permission.prompt}</div>
+          <div className="permission-title">
+            {inst.pending_permission.tool_name} 请求
+          </div>
+          {inst.pending_permission.details && (
+            <div className="permission-details" title={inst.pending_permission.details}>
+              {inst.pending_permission.details}
+            </div>
+          )}
           <div className="permission-choices">
             {inst.pending_permission.choices.map((choice) => (
               <button
@@ -390,6 +398,10 @@ function App() {
       unlisten = await listen<Instance[]>("instances-updated", (e) => {
         if (!mounted) return;
         setInstances(e.payload);
+        const hasPermission = e.payload.some((i) => i.status === "needs_permission");
+        if (hasPermission && !expanded) {
+          expandPanelRef.current();
+        }
       });
     })();
 
@@ -398,7 +410,7 @@ function App() {
       clearInterval(interval);
       if (unlisten) unlisten();
     };
-  }, []);
+  }, [expanded]);
 
   const expandPanelRef = useRef<() => void>(() => {});
   const collapsePanelRef = useRef<() => void>(() => {});
@@ -423,10 +435,21 @@ function App() {
   }, []);
 
   const realInstances = useMemo(() => {
+    const statusOrder: Record<string, number> = {
+      needs_permission: 0,
+      executing: 1,
+      waiting: 2,
+      completed: 3,
+    };
     return instances
       .filter((i) => i.pid !== 0 || (i.last_activity > 0 && !!i.last_hook_event))
       .map((i) => ({ ...i, subagents: i.subagents || [] }))
-      .sort((a, b) => a.working_directory.localeCompare(b.working_directory));
+      .sort((a, b) => {
+        const pa = statusOrder[a.status] ?? 99;
+        const pb = statusOrder[b.status] ?? 99;
+        if (pa !== pb) return pa - pb;
+        return a.working_directory.localeCompare(b.working_directory);
+      });
   }, [instances]);
   const executingCount = realInstances.filter((i) => i.status === "executing").length;
   const permissionCount = realInstances.filter((i) => i.status === "needs_permission").length;
