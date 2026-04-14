@@ -175,29 +175,62 @@ impl Adapter for ClaudeAdapter {
         if payload.event == "PermissionRequest" || is_permission_event {
             state.status = "needs_permission".to_string();
             let tool_name = payload.tool_name.clone().unwrap_or_else(|| "Claude".to_string());
-            let is_dangerous = matches!(
-                tool_name.as_str(),
-                "Bash" | "Edit" | "Write" | "Read" | "MultiEdit" | "Delete"
-            );
-            let choices = payload.choices.clone().unwrap_or_else(|| {
-                if is_dangerous {
-                    vec![
-                        "Allow for this conversation".to_string(),
-                        "Allow once".to_string(),
-                        "Deny".to_string(),
-                    ]
+
+            let (choices, default_choice, details) = if tool_name == "AskUserQuestion" {
+                if let Some(ref input) = payload.tool_input {
+                    if let Some(questions) = input.get("questions").and_then(|q| q.as_array()) {
+                        if let Some(q) = questions.first() {
+                            let question_text = q.get("question").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            let header = q.get("header").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            let options = q.get("options").and_then(|o| o.as_array()).cloned().unwrap_or_default();
+                            let labels: Vec<String> = options.iter()
+                                .filter_map(|opt| opt.get("label").and_then(|v| v.as_str()))
+                                .map(|s| s.to_string())
+                                .collect();
+                            let default = labels.first().cloned();
+                            let detail_text = if !header.is_empty() && !question_text.is_empty() {
+                                format!("{}\n{}", header, question_text)
+                            } else if !question_text.is_empty() {
+                                question_text
+                            } else {
+                                header
+                            };
+                            (labels, default, Some(detail_text))
+                        } else {
+                            (vec!["Allow".to_string(), "Deny".to_string()], Some("Allow".to_string()), None)
+                        }
+                    } else {
+                        (vec!["Allow".to_string(), "Deny".to_string()], Some("Allow".to_string()), None)
+                    }
                 } else {
-                    vec!["Allow".to_string(), "Deny".to_string()]
+                    (vec!["Allow".to_string(), "Deny".to_string()], Some("Allow".to_string()), None)
                 }
-            });
-            let default_choice = payload.default_choice.clone().or_else(|| {
-                if is_dangerous {
-                    Some("Allow once".to_string())
-                } else {
-                    Some("Allow".to_string())
-                }
-            });
-            let details = Self::extract_permission_details(payload.tool_name.as_deref(), payload.tool_input.as_ref());
+            } else {
+                let is_dangerous = matches!(
+                    tool_name.as_str(),
+                    "Bash" | "Edit" | "Write" | "Read" | "MultiEdit" | "Delete"
+                );
+                let choices = payload.choices.clone().unwrap_or_else(|| {
+                    if is_dangerous {
+                        vec![
+                            "Allow for this conversation".to_string(),
+                            "Allow once".to_string(),
+                            "Deny".to_string(),
+                        ]
+                    } else {
+                        vec!["Allow".to_string(), "Deny".to_string()]
+                    }
+                });
+                let default_choice = payload.default_choice.clone().or_else(|| {
+                    if is_dangerous {
+                        Some("Allow once".to_string())
+                    } else {
+                        Some("Allow".to_string())
+                    }
+                });
+                let details = Self::extract_permission_details(payload.tool_name.as_deref(), payload.tool_input.as_ref());
+                (choices, default_choice, details)
+            };
 
             state.pending_permission = Some(PendingPermission {
                 tool_name: tool_name.clone(),
@@ -297,7 +330,16 @@ impl Adapter for ClaudeAdapter {
         reason: Option<&str>,
     ) -> Result<String, String> {
         let trimmed = decision.trim();
-        let behavior = Self::normalize_permission_choice(trimmed)?;
+        let is_ask_user_question = instance
+            .pending_permission
+            .as_ref()
+            .map(|p| p.tool_name == "AskUserQuestion")
+            .unwrap_or(false);
+        let behavior = if is_ask_user_question {
+            trimmed
+        } else {
+            Self::normalize_permission_choice(trimmed)?
+        };
         let is_pretooluse = instance
             .last_hook_event
             .as_ref()
@@ -363,6 +405,19 @@ impl ClaudeAdapter {
         let name = tool_name.unwrap_or("Tool");
         let input = tool_input?;
         match name {
+            "AskUserQuestion" => {
+                let questions = input.get("questions")?.as_array()?;
+                let q = questions.first()?;
+                let question_text = q.get("question").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let header = q.get("header").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                if !header.is_empty() && !question_text.is_empty() {
+                    Some(format!("{}\n{}", header, question_text))
+                } else if !question_text.is_empty() {
+                    Some(question_text)
+                } else {
+                    Some(header)
+                }
+            }
             "Bash" => {
                 input.get("command").and_then(|v| v.as_str()).map(|s| format!("Command: {}", s))
             }
