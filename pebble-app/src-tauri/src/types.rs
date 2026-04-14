@@ -10,6 +10,7 @@ pub struct PendingPermission {
     pub prompt: String,
     pub choices: Vec<String>,
     pub default_choice: Option<String>,
+    pub details: Option<String>,
 }
 
 #[derive(Serialize, Clone, Debug)]

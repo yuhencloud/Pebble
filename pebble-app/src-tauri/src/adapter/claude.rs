@@ -189,6 +189,7 @@ impl Adapter for ClaudeAdapter {
                 prompt: format!("Allow {}?", tool_name),
                 choices,
                 default_choice,
+                details: None,
             });
         } else {
             let new_status = match payload.event.as_str() {
