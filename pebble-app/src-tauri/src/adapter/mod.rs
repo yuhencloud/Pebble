@@ -35,8 +35,16 @@ pub struct HookPayload {
     pub wezterm_unix_socket: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct SubagentState {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub started_at: u64,
+}
+
 /// Mutable state held per instance by the adapter
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct AdapterState {
     pub status: String,
     pub last_activity: u64,
@@ -52,6 +60,29 @@ pub struct AdapterState {
     pub wezterm_pane_id: Option<String>,
     pub wt_session_id: Option<String>,
     pub wezterm_unix_socket: Option<String>,
+    pub subagents: std::collections::HashMap<String, SubagentState>,
+}
+
+impl Default for AdapterState {
+    fn default() -> Self {
+        Self {
+            status: String::new(),
+            last_activity: 0,
+            last_hook_event: None,
+            pending_permission: None,
+            model: None,
+            permission_mode: None,
+            context_percent: None,
+            conversation_log: Vec::new(),
+            session_start: None,
+            transcript_path: None,
+            session_name: None,
+            wezterm_pane_id: None,
+            wt_session_id: None,
+            wezterm_unix_socket: None,
+            subagents: std::collections::HashMap::new(),
+        }
+    }
 }
 
 pub trait Adapter: Send + Sync {

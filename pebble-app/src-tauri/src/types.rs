@@ -111,6 +111,10 @@ pub struct IncomingHookPayload {
     pub wt_session_id: Option<String>,
     #[serde(default, rename = "wezterm_unix_socket")]
     pub wezterm_unix_socket: Option<String>,
+    #[serde(default, rename = "agent_id")]
+    pub agent_id: Option<String>,
+    #[serde(default, rename = "agent_type")]
+    pub agent_type: Option<String>,
 }
 
 pub struct AppState {
