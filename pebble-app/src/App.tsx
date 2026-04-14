@@ -324,7 +324,8 @@ function InstanceCard({
             }}
             title={inst.subagents.map((s) => `${s.name} ${s.status}`).join("; ")}
           >
-            Subagents ({inst.subagents.length}) {expandedSubagents ? "▲" : "▼"}
+            <span>Subagents ({inst.subagents.length})</span>
+            <span className="subagents-chevron">{expandedSubagents ? "▲" : "▼"}</span>
           </div>
           {expandedSubagents && (
             <div className="subagents-list">

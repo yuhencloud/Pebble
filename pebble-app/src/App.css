@@ -482,6 +482,8 @@ body,
 .subagents-title--clickable {
   cursor: pointer;
   user-select: none;
+  display: flex;
+  justify-content: space-between;
 }
 
 .subagents-list {
