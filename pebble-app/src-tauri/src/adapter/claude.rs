@@ -236,7 +236,7 @@ impl Adapter for ClaudeAdapter {
 
         cleaned.into_values().map(|s| {
             let full_name = if let Some(ref d) = s.description {
-                format!("{} {}", s.name, d)
+                format!("{}: {}", s.name, d)
             } else {
                 s.name.clone()
             };
