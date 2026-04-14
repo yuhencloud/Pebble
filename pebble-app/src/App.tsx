@@ -345,6 +345,16 @@ function App() {
   const prevExpandedRef = useRef(false);
 
   useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      e.preventDefault();
+    };
+    document.addEventListener("contextmenu", handler);
+    return () => {
+      document.removeEventListener("contextmenu", handler);
+    };
+  }, []);
+
+  useEffect(() => {
     const load = async () => {
       try {
         const data = await invoke<Instance[]>("get_instances");
