@@ -87,7 +87,6 @@ impl Adapter for ClaudeAdapter {
         if let Some(ref tp) = payload.transcript_path {
             if state.transcript_path.as_ref() != Some(tp) {
                 state.transcript_path = Some(tp.clone());
-                // One-time bootstrap of subagents from filesystem when transcript_path is first bound
                 if !state.subagents_bootstrapped {
                     let sid = std::path::Path::new(tp)
                         .file_stem()
@@ -113,9 +112,12 @@ impl Adapter for ClaudeAdapter {
                     state.session_start = Some(start);
                 }
             }
-            let preview = transcript::read_transcript_preview(tp, 3);
-            if !preview.is_empty() {
-                state.conversation_log = preview;
+            let exchange = transcript::read_last_exchange(tp);
+            if let Some(user) = exchange.0 {
+                state.latest_user_preview = Some(user);
+            }
+            if let Some(assistant) = exchange.1 {
+                state.latest_assistant_preview = Some(assistant);
             }
         }
 
@@ -144,6 +146,18 @@ impl Adapter for ClaudeAdapter {
             context_percent: payload.context_percent,
             session_name: payload.session_name.clone(),
         };
+
+        if payload.event == "UserPromptSubmit" {
+            if let Some(ref input) = payload.tool_input {
+                let fallback = input.to_string();
+                let text = input.as_str().unwrap_or(&fallback);
+                let cleaned = transcript::strip_markdown(text);
+                let trimmed = cleaned.trim();
+                if !trimmed.is_empty() {
+                    state.latest_user_preview = Some(trimmed.chars().take(80).collect());
+                }
+            }
+        }
 
         state.last_hook_event = Some(event.clone());
         state.last_activity = now_secs;
@@ -183,13 +197,15 @@ impl Adapter for ClaudeAdapter {
                     Some("Allow".to_string())
                 }
             });
+            let details = Self::extract_permission_details(payload.tool_name.as_deref(), payload.tool_input.as_ref());
+
             state.pending_permission = Some(PendingPermission {
                 tool_name: tool_name.clone(),
                 tool_use_id: payload.tool_use_id.clone().unwrap_or_else(|| payload.timestamp.to_string()),
                 prompt: format!("Allow {}?", tool_name),
                 choices,
                 default_choice,
-                details: None,
+                details,
             });
         } else {
             let new_status = match payload.event.as_str() {
@@ -202,24 +218,42 @@ impl Adapter for ClaudeAdapter {
     }
 
     fn get_preview(&self, state: &AdapterState) -> Vec<String> {
-        if !state.conversation_log.is_empty() {
-            state.conversation_log.clone()
+        let mut result = Vec::new();
+
+        if let Some(ref user) = state.latest_user_preview {
+            result.push(format!("You: {}", user.chars().take(60).collect::<String>()));
         } else if let Some(ref event) = state.last_hook_event {
             if event.event == "UserPromptSubmit" {
                 if let Some(ref input) = event.tool_input {
                     let fallback = input.to_string();
                     let text = input.as_str().unwrap_or(&fallback);
-                    let truncated = if text.len() > 80 { format!("{}...", &text[..80]) } else { text.to_string() };
-                    return vec![format!("You: {}", truncated)];
+                    let truncated = if text.len() > 60 { format!("{}...", &text[..60]) } else { text.to_string() };
+                    result.push(format!("You: {}", truncated));
+                } else {
+                    result.push("You: ...".to_string());
                 }
-                return vec!["You: ...".to_string()];
-            } else if event.event == "PreToolUse" {
-                return vec![format!("Using {}", event.tool_name.as_deref().unwrap_or("Tool"))];
             }
-            Vec::new()
-        } else {
-            Vec::new()
         }
+
+        let action_line = if let Some(ref event) = state.last_hook_event {
+            if event.event == "PreToolUse" && event.tool_name.is_some() {
+                Some(format!("Using {}", event.tool_name.as_deref().unwrap_or("Tool")))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        if let Some(action) = action_line {
+            result.push(action);
+        } else if let Some(ref assistant) = state.latest_assistant_preview {
+            let truncated: String = assistant.chars().take(60).collect();
+            result.push(truncated);
+        }
+
+        result.truncate(2);
+        result
     }
 
     fn get_subagents(&self, state: &mut AdapterState) -> Vec<SubagentInfo> {
@@ -322,6 +356,39 @@ impl ClaudeAdapter {
             Ok("deny")
         } else {
             Err(format!("Invalid permission choice: {}", choice))
+        }
+    }
+
+    fn extract_permission_details(tool_name: Option<&str>, tool_input: Option<&serde_json::Value>) -> Option<String> {
+        let name = tool_name.unwrap_or("Tool");
+        let input = tool_input?;
+        match name {
+            "Bash" => {
+                input.get("command").and_then(|v| v.as_str()).map(|s| format!("Command: {}", s))
+            }
+            "Edit" => {
+                let path = input.get("file_path").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let old = input.get("old_string").and_then(|v| v.as_str()).map(|s| s.lines().next().unwrap_or(s));
+                let new = input.get("new_string").and_then(|v| v.as_str()).map(|s| s.lines().next().unwrap_or(s));
+                Some(format!("File: {}\nReplace: {:?} -> {:?}", path, old, new))
+            }
+            "Write" => {
+                let path = input.get("file_path").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let content = input.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                let preview: String = content.chars().take(200).collect();
+                Some(format!("File: {}\nContent: {}", path, preview))
+            }
+            "Read" => {
+                input.get("file_path").and_then(|v| v.as_str()).map(|s| format!("File: {}", s))
+            }
+            "Delete" => {
+                input.get("file_path").and_then(|v| v.as_str()).map(|s| format!("File: {}", s))
+            }
+            _ => {
+                let json = input.to_string();
+                let preview: String = json.chars().take(200).collect();
+                Some(format!("{} params: {}", name, preview))
+            }
         }
     }
 }
