@@ -661,9 +661,14 @@ fn main() {
         }
     );
 
+    let prevent = tauri_plugin_prevent_default::Builder::new()
+        .with_flags(tauri_plugin_prevent_default::Flags::CONTEXT_MENU)
+        .build();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(prevent)
         .manage(AppState {
             instances: instances.clone(),
             registry: registry.clone(),
