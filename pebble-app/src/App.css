@@ -260,8 +260,8 @@ body,
   flex-direction: column;
   overflow: hidden;
   opacity: 0;
-  transform: translateY(-8px);
-  transition: opacity 0.12s ease-out, transform 0.12s ease-out;
+  transform: translateY(-10px);
+  transition: opacity 0.22s ease-out, transform 0.22s cubic-bezier(0.25, 0.46, 0.45, 0.94);
   pointer-events: none;
   background: var(--bg);
   will-change: transform, opacity;

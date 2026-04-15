@@ -487,7 +487,6 @@ function App() {
 
   const instancesRef = useRef<HTMLDivElement>(null);
   const innerRef = useRef<HTMLDivElement>(null);
-  const [desiredBodyH, setDesiredBodyH] = useState(COLLAPSED_H - FILLET_R);
   const lastHeightRef = useRef<number | null>(null);
 
   useLayoutEffect(() => {
@@ -503,8 +502,7 @@ function App() {
       const h = Math.min(Math.max(contentH, COLLAPSED_H - FILLET_R), MAX_EXPANDED_BODY_H);
       if (lastHeightRef.current !== h) {
         lastHeightRef.current = h;
-        setDesiredBodyH(h);
-        invoke("resize_window_centered", { width: EXPANDED_W, height: h + FILLET_R, animate: false }).catch(console.error);
+        invoke("resize_window_centered", { width: EXPANDED_W, height: h + FILLET_R, animate: true }).catch(console.error);
       }
     };
 
@@ -540,8 +538,7 @@ function App() {
         const h = Math.min(Math.max(contentH, COLLAPSED_H - FILLET_R), MAX_EXPANDED_BODY_H);
         if (lastHeightRef.current !== h) {
           lastHeightRef.current = h;
-          setDesiredBodyH(h);
-          invoke("resize_window_centered", { width: EXPANDED_W, height: h + FILLET_R, animate: false }).catch(console.error);
+          invoke("resize_window_centered", { width: EXPANDED_W, height: h + FILLET_R, animate: true }).catch(console.error);
         }
         resizeDebounceTimer.current = null;
       }, 50);
@@ -582,9 +579,9 @@ function App() {
       setExpanded(false);
       prevExpandedRef.current = false;
       lastHeightRef.current = null;
-      invoke("resize_window_centered", { width: COLLAPSED_W, height: COLLAPSED_H, animate: false }).catch(console.error);
+      invoke("resize_window_centered", { width: COLLAPSED_W, height: COLLAPSED_H, animate: true }).catch(console.error);
       collapseTimer.current = null;
-    }, 150);
+    }, 200);
   };
 
   expandPanelRef.current = expandPanel;
@@ -598,22 +595,31 @@ function App() {
     }
   };
 
-
-  const R = FILLET_R;
-  const W = expanded ? EXPANDED_W : COLLAPSED_W;
-  const BR = W - R;
-  const bodyH = expanded ? desiredBodyH : 38;
-  // Safer clip path that handles small heights
-  const safeBottomY = Math.max(bodyH, R + 12);
-  const panelClip = `path('M 0,0 Q ${R},0 ${R},${R} L ${R},${safeBottomY - 12} Q ${R},${safeBottomY} ${R + 12},${safeBottomY} L ${BR - 12},${safeBottomY} Q ${BR},${safeBottomY} ${BR},${safeBottomY - 12} L ${BR},${R} Q ${BR},0 ${W},0 Z')`;
-
+  const panelRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    let rafId: number;
+    const R = FILLET_R;
+    const updateClip = () => {
+      if (panelRef.current) {
+        const winW = window.innerWidth;
+        const winH = window.innerHeight;
+        const safeBottomY = Math.max(winH - R, R + 12);
+        const BR = winW - R;
+        const panelClip = `path('M 0,0 Q ${R},0 ${R},${R} L ${R},${safeBottomY - 12} Q ${R},${safeBottomY} ${R + 12},${safeBottomY} L ${BR - 12},${safeBottomY} Q ${BR},${safeBottomY} ${BR},${safeBottomY - 12} L ${BR},${R} Q ${BR},0 ${winW},0 Z')`;
+        panelRef.current.style.clipPath = panelClip;
+      }
+      rafId = requestAnimationFrame(updateClip);
+    };
+    rafId = requestAnimationFrame(updateClip);
+    return () => cancelAnimationFrame(rafId);
+  }, []);
 
   return (
     <div
+      ref={panelRef}
       className={`panel ${expanded ? "panel--open" : ""}`}
       onMouseEnter={expandPanel}
       onMouseLeave={collapsePanel}
-      style={{ clipPath: panelClip }}
     >
       <div className="compact-header">
         <div className="wing wing--left">

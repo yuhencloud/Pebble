@@ -95,11 +95,15 @@ fn jump_to_terminal(instance_id: String, state: State<'_, AppState>) -> Result<(
     adapter.jump_to_terminal(&instance)
 }
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static RESIZE_ANIMATION_GEN: AtomicU64 = AtomicU64::new(0);
+
 #[tauri::command]
 fn resize_window_centered(
     width: f64,
     height: f64,
-    _animate: bool,
+    animate: bool,
     window: tauri::Window,
 ) -> Result<(), String> {
     #[cfg(target_os = "macos")]
@@ -127,18 +131,67 @@ fn resize_window_centered(
     }
     #[cfg(not(target_os = "macos"))]
     {
-        if let Ok(Some(monitor)) = window.current_monitor() {
+        let target_x = if let Ok(Some(monitor)) = window.current_monitor() {
             let size = monitor.size();
             let scale = monitor.scale_factor();
             let logical_width = size.width as f64 / scale;
-            let x = (logical_width - width) / 2.0;
-            let _ = window.set_position(tauri::Position::Logical(
-                tauri::LogicalPosition { x, y: 0.0 }
-            ));
+            Some((logical_width - width) / 2.0)
+        } else {
+            None
+        };
+
+        if !animate {
+            if let Some(x) = target_x {
+                let _ = window.set_position(tauri::Position::Logical(
+                    tauri::LogicalPosition { x, y: 0.0 }
+                ));
+            }
+            window
+                .set_size(tauri::Size::Logical(tauri::LogicalSize { width, height }))
+                .map_err(|e| e.to_string())?;
+        } else {
+            let current_pos = window.outer_position().map_err(|e| e.to_string())?;
+            let current_size = window.outer_size().map_err(|e| e.to_string())?;
+            let scale = window.current_monitor().ok().flatten().map(|m| m.scale_factor()).unwrap_or(1.0);
+
+            let start_x = current_pos.x as f64 / scale;
+            let start_y = current_pos.y as f64 / scale;
+            let start_w = current_size.width as f64 / scale;
+            let start_h = current_size.height as f64 / scale;
+
+            let target_x = target_x.unwrap_or(start_x);
+            let target_y = 0.0;
+            let gen = RESIZE_ANIMATION_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+
+            std::thread::spawn(move || {
+                const DURATION_MS: u64 = 220;
+                const FRAME_MS: u64 = 16;
+                let steps = DURATION_MS / FRAME_MS;
+                for i in 0..=steps {
+                    let t = i as f64 / steps as f64;
+                    // ease-out cubic
+                    let t = 1.0 - (1.0 - t).powi(3);
+
+                    let w = start_w + (width - start_w) * t;
+                    let h = start_h + (height - start_h) * t;
+                    let x = start_x + (target_x - start_x) * t;
+                    let y = start_y + (target_y - start_y) * t;
+
+                    if RESIZE_ANIMATION_GEN.load(Ordering::SeqCst) != gen {
+                        return;
+                    }
+
+                    let _ = window.set_position(tauri::Position::Logical(
+                        tauri::LogicalPosition { x, y }
+                    ));
+                    let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize { width: w, height: h }));
+
+                    if i < steps {
+                        std::thread::sleep(std::time::Duration::from_millis(FRAME_MS));
+                    }
+                }
+            });
         }
-        window
-            .set_size(tauri::Size::Logical(tauri::LogicalSize { width, height }))
-            .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
