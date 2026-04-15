@@ -1,19 +1,18 @@
 # Tray Icon Design Spec
 
 ## Goal
-Add a system tray icon for Pebble on both macOS and Windows. Left-clicking the icon shows and expands the Pebble floating panel. Right-clicking opens a context menu with a single "Quit" item that exits the application.
+Add a system tray icon for Pebble on both macOS and Windows. Left-clicking the icon toggles the Pebble floating panel between expanded and collapsed. Right-clicking opens a context menu with a single "Quit" item that exits the application.
 
 ## Architecture
 
 ### Components
 - **Tray Icon**: Registered during Tauri `setup` via `tauri::tray::TrayIconBuilder`.
-- **Tray Icon Asset**: A dedicated tray icon generated from the existing `icon.png`, removing the border while preserving the pixel-art capybara and original colors. Target size: 32×32 / 64×64.
+- **Tray Icon Asset**: A dedicated tray icon generated from the existing `icon.png`, removing the border while preserving the pixel-art capybara and original colors. The sprite fills the canvas to maximize visibility at small sizes. Target size: 256×256.
 - **Tray Menu**: A minimal context menu created with `tauri::menu::Menu`, containing one item labeled "Quit".
-- **Tray Event Handler**: Rust-side handler for left-click (show + expand window) and right-click (show menu) events.
+- **Tray Event Handler**: Rust-side handler for left-click (show + focus window, emit toggle event) and right-click (show menu) events.
 
 ### Files to Touch
 - `pebble-app/src-tauri/src/main.rs` — Core tray setup and event handling.
-- `pebble-app/src-tauri/tauri.conf.json` — Ensure Tauri capabilities include tray/menu.
 - `pebble-app/src-tauri/icons/icon.png` — Source asset for generating the tray icon.
 - `pebble-app/src/App.tsx` — Listen for `tray-show-expand` event and trigger expand.
 
@@ -28,10 +27,12 @@ setup() → TrayIconBuilder::new()
 ```
 
 ### Left Click
-1. Retrieve or recreate the "main" webview window.
-2. If hidden, call `show()` and `set_focus()`.
-3. Emit `tray-show-expand` to the frontend.
-4. Frontend receives the event, sets `expanded = true`, and invokes `resize_window_centered` to expand the panel.
+1. Retrieve the "main" webview window.
+2. Call `show()` and `set_focus()`.
+3. Emit `tray-toggle` to the frontend.
+4. Frontend receives the event and either expands or collapses the panel based on the current `expanded` state.
+5. A 300ms debounce on the tray-toggle event prevents double-firing on Windows.
+6. After expanding, hover-leave events are ignored for 800ms so the panel does not collapse immediately while the mouse is still in the tray area.
 
 ### Right Click
 - Pop up the context menu showing the "Quit" item.
@@ -47,7 +48,7 @@ setup() → TrayIconBuilder::new()
 ## Testing Checklist
 - [ ] macOS menu bar shows the tray icon (pixel capybara, no border, colored).
 - [ ] Windows system tray shows the tray icon.
-- [ ] Left-clicking the tray icon displays the Pebble panel and expands it.
+- [ ] Left-clicking the tray icon toggles the Pebble panel between expanded and collapsed.
 - [ ] Right-clicking the tray icon shows a context menu with "Quit".
 - [ ] Clicking "Quit" fully exits the Pebble process.
-- [ ] After closing the Pebble window, left-clicking the tray icon restores and expands it again.
+- [ ] After closing the Pebble window, left-clicking the tray icon restores it and expands the panel.
