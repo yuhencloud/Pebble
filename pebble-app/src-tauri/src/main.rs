@@ -120,7 +120,7 @@ fn respond_permission(
         agent_type: None,
     }).ok_or("No adapter found")?;
 
-    let event_type = instance.last_hook_event.as_ref().map(|e| e.event.clone()).unwrap_or_else(|| "PermissionRequest".to_string());
+    let _event_type = instance.last_hook_event.as_ref().map(|e| e.event.clone()).unwrap_or_else(|| "PermissionRequest".to_string());
     let response_json = adapter.respond_permission(&instance, &choice, None)?;
 
     let key = instance
@@ -152,7 +152,7 @@ fn respond_permission(
 fn resize_window_centered(
     width: f64,
     height: f64,
-    animate: bool,
+    _animate: bool,
     window: tauri::Window,
 ) -> Result<(), String> {
     #[cfg(target_os = "macos")]
@@ -628,19 +628,41 @@ fn main() {
                 }
             }
             if matched_id.is_none() {
+                // Prefer blank instances (no transcript_path / no hook event) to avoid
+                // cross-contaminating active instances when multiple sessions share cwd.
+                let mut blank_candidate: Option<&Instance> = None;
                 let mut max_la = 0u64;
                 for i in map.values() {
-                    if i.working_directory == payload.cwd && i.last_activity > max_la {
-                        max_la = i.last_activity;
+                    if i.working_directory == payload.cwd {
+                        if i.transcript_path.is_none() && i.last_hook_event.is_none() {
+                            blank_candidate = Some(i);
+                        } else if i.last_activity > max_la {
+                            max_la = i.last_activity;
+                            matched_id = Some(i.id.clone());
+                        }
+                    }
+                }
+                if matched_id.is_none() {
+                    if let Some(i) = blank_candidate {
                         matched_id = Some(i.id.clone());
                     }
                 }
             }
             if matched_id.is_none() {
+                let mut blank_candidate: Option<&Instance> = None;
                 let mut max_la = 0u64;
                 for i in map.values() {
-                    if is_related_cwd(&i.working_directory, &payload.cwd) && i.last_activity > max_la {
-                        max_la = i.last_activity;
+                    if is_related_cwd(&i.working_directory, &payload.cwd) {
+                        if i.transcript_path.is_none() && i.last_hook_event.is_none() {
+                            blank_candidate = Some(i);
+                        } else if i.last_activity > max_la {
+                            max_la = i.last_activity;
+                            matched_id = Some(i.id.clone());
+                        }
+                    }
+                }
+                if matched_id.is_none() {
+                    if let Some(i) = blank_candidate {
                         matched_id = Some(i.id.clone());
                     }
                 }
@@ -670,12 +692,16 @@ fn main() {
                     map.insert(id.clone(), instance);
                 }
             } else {
-                let id = format!("cc-{}", payload.timestamp);
+                let (id, pid) = if let Some(spid) = payload.sender_pid {
+                    (format!("cc-{}", spid), spid)
+                } else {
+                    (format!("cc-{}", payload.timestamp), 0)
+                };
                 let mut new_state = crate::adapter::AdapterState::default();
                 adapter.handle_hook(&hook_payload, &mut new_state, &mut map);
                 let instance = Instance {
                     id: id.clone(),
-                    pid: 0,
+                    pid,
                     status: new_state.status.clone(),
                     working_directory: payload.cwd.clone(),
                     terminal_app: "Unknown".to_string(),

@@ -260,8 +260,13 @@ impl Adapter for ClaudeAdapter {
                 if let Some(ref input) = event.tool_input {
                     let fallback = input.to_string();
                     let text = input.as_str().unwrap_or(&fallback);
-                    let truncated = if text.len() > 60 { format!("{}...", &text[..60]) } else { text.to_string() };
-                    result.push(format!("You: {}", truncated));
+                    let truncated: String = text.chars().take(60).collect();
+                    let display = if text.chars().count() > 60 {
+                        format!("{}...", truncated)
+                    } else {
+                        truncated
+                    };
+                    result.push(format!("You: {}", display));
                 } else {
                     result.push("You: ...".to_string());
                 }
@@ -438,6 +443,19 @@ impl ClaudeAdapter {
             }
             "Delete" => {
                 input.get("file_path").and_then(|v| v.as_str()).map(|s| format!("File: {}", s))
+            }
+            "MultiEdit" => {
+                let files = input.get("files")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter()
+                        .filter_map(|f| f.get("file_path").and_then(|v| v.as_str()))
+                        .collect::<Vec<_>>())
+                    .unwrap_or_default();
+                if files.is_empty() {
+                    Some("MultiEdit: (no files specified)".to_string())
+                } else {
+                    Some(format!("Files: {}", files.join(", ")))
+                }
             }
             _ => {
                 let json = input.to_string();

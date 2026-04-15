@@ -84,7 +84,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let raw_name = proc.name();
             let name = raw_name.strip_suffix(".exe").unwrap_or(raw_name);
             let status = proc.status();
-            if status != ProcessStatus::Zombie && (name == "claude" || name == "claude-code") {
+            let args = proc.cmd().join(" ");
+            let is_claude = name == "claude" || name == "claude-code";
+            let is_node_claude = name == "node" && args.contains("claude-code");
+            if status != ProcessStatus::Zombie && (is_claude || is_node_claude) {
                 sender_pid = Some(current_pid as u32);
                 break;
             }

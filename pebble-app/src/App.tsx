@@ -368,6 +368,7 @@ function App() {
   const collapseTimer = useRef<number | null>(null);
   const resizeDebounceTimer = useRef<number | null>(null);
   const prevExpandedRef = useRef(false);
+  const prevPermissionCountRef = useRef(0);
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -398,10 +399,12 @@ function App() {
       unlisten = await listen<Instance[]>("instances-updated", (e) => {
         if (!mounted) return;
         setInstances(e.payload);
-        const hasPermission = e.payload.some((i) => i.status === "needs_permission");
-        if (hasPermission && !expanded) {
+        const permissionCount = e.payload.filter((i) => i.status === "needs_permission").length;
+        const hadPermission = prevPermissionCountRef.current > 0;
+        if (permissionCount > 0 && !hadPermission && !expanded) {
           expandPanelRef.current();
         }
+        prevPermissionCountRef.current = permissionCount;
       });
     })();
 

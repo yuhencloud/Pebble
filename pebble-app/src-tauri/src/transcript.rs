@@ -1,19 +1,18 @@
 use std::fs::File;
-use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 
-pub fn read_transcript_preview(path: &str, n: usize) -> Vec<String> {
-    let exchange = read_last_exchange(path);
-    let mut result = Vec::new();
-    if let Some(user) = exchange.0 {
-        result.push(truncate_preview(&user, 80, "You: "));
-    }
-    if let Some(assistant) = exchange.1 {
-        result.push(truncate_preview(&assistant, 80, ""));
-    }
-    if result.len() > n {
-        result.truncate(n);
-    }
-    result
+lazy_static::lazy_static! {
+    static ref RE_CODE_BLOCK: regex::Regex = regex::Regex::new(r"```(\w+)?\n[\s\S]*?```").unwrap();
+    static ref RE_INLINE_CODE: regex::Regex = regex::Regex::new(r"`([^`]+)`").unwrap();
+    static ref RE_BOLD: regex::Regex = regex::Regex::new(r"\*\*([^*]+)\*\*").unwrap();
+    static ref RE_ITALIC: regex::Regex = regex::Regex::new(r"\*([^*]+)\*").unwrap();
+    static ref RE_UNDERLINE_DBL: regex::Regex = regex::Regex::new(r"__([^_]+)__").unwrap();
+    static ref RE_UNDERLINE: regex::Regex = regex::Regex::new(r"_([^_]+)_").unwrap();
+    static ref RE_HEADERS: regex::Regex = regex::Regex::new(r"(?m)^#{1,6}\s*").unwrap();
+    static ref RE_LIST_BULLET: regex::Regex = regex::Regex::new(r"(?m)^\s*[-*+]\s+").unwrap();
+    static ref RE_LIST_NUMBER: regex::Regex = regex::Regex::new(r"(?m)^\s*\d+\.\s+").unwrap();
+    static ref RE_LINKS: regex::Regex = regex::Regex::new(r"\[([^\]]+)\]\([^)]+\)").unwrap();
+    static ref RE_SPACES: regex::Regex = regex::Regex::new(r"\s+").unwrap();
 }
 
 pub fn read_last_exchange(path: &str) -> (Option<String>, Option<String>) {
@@ -33,7 +32,14 @@ pub fn read_last_exchange(path: &str) -> (Option<String>, Option<String>) {
     let mut reader = BufReader::new(file);
     let _ = reader.read_line(&mut discard);
 
-    let lines: Vec<String> = reader.lines().filter_map(|l| l.ok()).collect();
+    let mut buf = Vec::new();
+    let _ = reader.read_to_end(&mut buf);
+    let lines: Vec<String> = buf
+        .split(|&b| b == b'\n')
+        .filter(|l| !l.is_empty())
+        .map(|l| String::from_utf8_lossy(l).into_owned())
+        .collect();
+
     let mut user_preview: Option<String> = None;
     let mut assistant_preview: Option<String> = None;
 
@@ -76,26 +82,19 @@ pub fn read_session_start_from_transcript(path: &str) -> Option<u64> {
     let file = File::open(path).ok()?;
     let reader = BufReader::new(file);
 
-    for line in reader.lines().filter_map(|l| l.ok()) {
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
-            if let Some(ts_str) = json.get("timestamp").and_then(|v| v.as_str()) {
-                if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts_str) {
-                    return Some(dt.timestamp() as u64);
+    for line_result in reader.split(b'\n') {
+        if let Ok(bytes) = line_result {
+            let line = String::from_utf8_lossy(&bytes);
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
+                if let Some(ts_str) = json.get("timestamp").and_then(|v| v.as_str()) {
+                    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts_str) {
+                        return Some(dt.timestamp() as u64);
+                    }
                 }
             }
         }
     }
     None
-}
-
-fn truncate_preview(text: &str, max_chars: usize, prefix: &str) -> String {
-    let available = max_chars.saturating_sub(prefix.len());
-    let truncated: String = text.chars().take(available).collect();
-    if text.chars().count() > available {
-        format!("{}{}...", prefix, truncated)
-    } else {
-        format!("{}{}", prefix, truncated)
-    }
 }
 
 fn extract_clean_text(content: &serde_json::Value, role: &str) -> Option<String> {
@@ -132,8 +131,7 @@ fn extract_clean_text(content: &serde_json::Value, role: &str) -> Option<String>
 pub fn strip_markdown(text: &str) -> String {
     let mut result = text.to_string();
     // Code blocks -> "Code: lang" or stripped
-    result = regex::Regex::new(r"```(\w+)?\n[\s\S]*?```")
-        .unwrap()
+    result = RE_CODE_BLOCK
         .replace_all(&result, |caps: &regex::Captures| {
             if let Some(lang) = caps.get(1) {
                 format!("Code: {}", lang.as_str())
@@ -143,21 +141,21 @@ pub fn strip_markdown(text: &str) -> String {
         })
         .to_string();
     // Inline code
-    result = regex::Regex::new(r"`([^`]+)`").unwrap().replace_all(&result, "$1").to_string();
+    result = RE_INLINE_CODE.replace_all(&result, "$1").to_string();
     // Bold / italic
-    result = regex::Regex::new(r"\*\*([^*]+)\*\*").unwrap().replace_all(&result, "$1").to_string();
-    result = regex::Regex::new(r"\*([^*]+)\*").unwrap().replace_all(&result, "$1").to_string();
-    result = regex::Regex::new(r"__([^_]+)__").unwrap().replace_all(&result, "$1").to_string();
-    result = regex::Regex::new(r"_([^_]+)_").unwrap().replace_all(&result, "$1").to_string();
+    result = RE_BOLD.replace_all(&result, "$1").to_string();
+    result = RE_ITALIC.replace_all(&result, "$1").to_string();
+    result = RE_UNDERLINE_DBL.replace_all(&result, "$1").to_string();
+    result = RE_UNDERLINE.replace_all(&result, "$1").to_string();
     // Headers
-    result = regex::Regex::new(r"(?m)^#{1,6}\s*").unwrap().replace_all(&result, "").to_string();
+    result = RE_HEADERS.replace_all(&result, "").to_string();
     // List markers
-    result = regex::Regex::new(r"(?m)^\s*[-*+]\s+").unwrap().replace_all(&result, "").to_string();
-    result = regex::Regex::new(r"(?m)^\s*\d+\.\s+").unwrap().replace_all(&result, "").to_string();
+    result = RE_LIST_BULLET.replace_all(&result, "").to_string();
+    result = RE_LIST_NUMBER.replace_all(&result, "").to_string();
     // Links [text](url)
-    result = regex::Regex::new(r"\[([^\]]+)\]\([^)]+\)").unwrap().replace_all(&result, "$1").to_string();
+    result = RE_LINKS.replace_all(&result, "$1").to_string();
     // Collapse multiple spaces
-    result = regex::Regex::new(r"\s+").unwrap().replace_all(&result.trim(), " ").to_string();
+    result = RE_SPACES.replace_all(&result.trim(), " ").to_string();
     result
 }
 

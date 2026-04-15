@@ -256,8 +256,11 @@ mod win {
         if terminal_app == "WezTerm" {
             if let Some(pane) = wezterm_pane_id {
                 match activate_wezterm_pane(pane, wezterm_unix_socket) {
-                    Ok(()) => eprintln!("[pebble-jump] WezTerm pane activated successfully"),
-                    Err(e) => eprintln!("[pebble-jump] WezTerm pane activation failed: {}", e),
+                    Ok(()) => {
+                        eprintln!("[pebble-jump] WezTerm pane activated successfully");
+                        return Ok(());
+                    }
+                    Err(e) => eprintln!("[pebble-jump] WezTerm pane activation failed: {}, falling back", e),
                 }
             } else {
                 eprintln!("[pebble-jump] WezTerm detected but no pane_id available");
