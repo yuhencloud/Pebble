@@ -331,55 +331,6 @@ impl Adapter for ClaudeAdapter {
         )
     }
 
-    fn respond_permission(
-        &self,
-        instance: &Instance,
-        decision: &str,
-        reason: Option<&str>,
-    ) -> Result<String, String> {
-        let trimmed = decision.trim();
-        let is_ask_user_question = instance
-            .pending_permission
-            .as_ref()
-            .map(|p| p.tool_name == "AskUserQuestion")
-            .unwrap_or(false);
-        let behavior = if is_ask_user_question {
-            trimmed
-        } else {
-            Self::normalize_permission_choice(trimmed)?
-        };
-        let is_pretooluse = instance
-            .last_hook_event
-            .as_ref()
-            .map(|e| e.event == "PreToolUse")
-            .unwrap_or(false);
-
-        if is_pretooluse {
-            let mut hso = serde_json::json!({
-                "hookEventName": "PreToolUse",
-                "permissionDecision": behavior
-            });
-            if let Some(r) = reason {
-                hso["permissionDecisionReason"] = serde_json::json!(r);
-            }
-            Ok(serde_json::json!({
-                "continue": true,
-                "hookSpecificOutput": hso
-            }).to_string())
-        } else {
-            let mut decision_obj = serde_json::json!({ "behavior": behavior });
-            if behavior == "deny" {
-                decision_obj["message"] = serde_json::json!(reason.unwrap_or("Denied by user via Pebble"));
-            }
-            Ok(serde_json::json!({
-                "continue": true,
-                "hookSpecificOutput": {
-                    "hookEventName": "PermissionRequest",
-                    "decision": decision_obj
-                }
-            }).to_string())
-        }
-    }
 }
 
 impl ClaudeAdapter {
@@ -393,19 +344,6 @@ impl ClaudeAdapter {
                 Some(old) if old == v => {}
                 _ => *current = Some(v.clone()),
             }
-        }
-    }
-
-    fn normalize_permission_choice(choice: &str) -> Result<&'static str, String> {
-        if choice.eq_ignore_ascii_case("allow")
-            || choice.eq_ignore_ascii_case("allow for this conversation")
-            || choice.eq_ignore_ascii_case("allow once")
-        {
-            Ok("allow")
-        } else if choice.eq_ignore_ascii_case("deny") {
-            Ok("deny")
-        } else {
-            Err(format!("Invalid permission choice: {}", choice))
         }
     }
 

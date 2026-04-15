@@ -118,14 +118,6 @@ pub trait Adapter: Send + Sync {
 
     /// Focus the terminal window for this instance
     fn jump_to_terminal(&self, instance: &Instance) -> Result<(), String>;
-
-    /// Respond to a permission request (for hooks that support it)
-    fn respond_permission(
-        &self,
-        instance: &Instance,
-        decision: &str,
-        reason: Option<&str>,
-    ) -> Result<String, String>;
 }
 
 pub struct AdapterRegistry {
