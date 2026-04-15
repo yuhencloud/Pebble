@@ -351,6 +351,10 @@ function App() {
   const resizeDebounceTimer = useRef<number | null>(null);
   const prevExpandedRef = useRef(false);
   const prevPermissionCountRef = useRef(0);
+  const expandedRef = useRef(expanded);
+  useEffect(() => {
+    expandedRef.current = expanded;
+  }, [expanded]);
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -423,24 +427,13 @@ function App() {
     let unlisten: (() => void) | undefined;
     let mounted = true;
     (async () => {
-      unlisten = await listen<void>("tray-show-expand", () => {
+      unlisten = await listen<void>("tray-toggle", () => {
         if (!mounted) return;
-        expandPanelRef.current();
-      });
-    })();
-    return () => {
-      mounted = false;
-      if (unlisten) unlisten();
-    };
-  }, []);
-
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    let mounted = true;
-    (async () => {
-      unlisten = await listen<void>("tray-hide-collapse", () => {
-        if (!mounted) return;
-        collapsePanelRef.current();
+        if (expandedRef.current) {
+          collapsePanelRef.current();
+        } else {
+          expandPanelRef.current();
+        }
       });
     })();
     return () => {
