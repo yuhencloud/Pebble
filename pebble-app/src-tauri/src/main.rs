@@ -85,70 +85,6 @@ fn jump_to_terminal(instance_id: String, state: State<'_, AppState>) -> Result<(
 }
 
 #[tauri::command]
-fn respond_permission(
-    instance_id: String,
-    choice: String,
-    state: State<'_, AppState>,
-    permission_store: State<'_, hook::server::PermissionResponseStore>,
-) -> Result<(), String> {
-    let map = state.instances.lock();
-    let instance = map
-        .values()
-        .find(|i| i.id == instance_id)
-        .cloned()
-        .ok_or("Instance not found")?;
-    drop(map);
-
-    let adapter = state.registry.find_adapter_for_event(&adapter::HookPayload {
-        event: "PermissionRequest".to_string(),
-        cwd: instance.working_directory.clone(),
-        timestamp: 0,
-        tool_name: None,
-        tool_input: None,
-        permission_mode: None,
-        tool_use_id: instance.pending_permission.as_ref().map(|p| p.tool_use_id.clone()),
-        model: None,
-        context_percent: None,
-        session_name: None,
-        transcript_path: None,
-        choices: None,
-        default_choice: None,
-        wezterm_pane_id: None,
-        wt_session_id: None,
-        wezterm_unix_socket: None,
-        agent_id: None,
-        agent_type: None,
-    }).ok_or("No adapter found")?;
-
-    let _event_type = instance.last_hook_event.as_ref().map(|e| e.event.clone()).unwrap_or_else(|| "PermissionRequest".to_string());
-    let response_json = adapter.respond_permission(&instance, &choice, None)?;
-
-    let key = instance
-        .pending_permission
-        .as_ref()
-        .map(|p| p.tool_use_id.clone())
-        .unwrap_or_else(|| {
-            instance
-                .last_hook_event
-                .as_ref()
-                .map(|e| e.timestamp.to_string())
-                .unwrap_or_else(|| instance_id.clone())
-        });
-
-    permission_store.set(key.clone(), response_json.clone());
-
-    {
-        let mut map = state.instances.lock();
-        if let Some(inst) = map.values_mut().find(|i| i.id == instance_id) {
-            inst.status = "executing".to_string();
-            inst.pending_permission = None;
-        }
-    }
-
-    Ok(())
-}
-
-#[tauri::command]
 fn resize_window_centered(
     width: f64,
     height: f64,
@@ -437,8 +373,15 @@ fn start_state_monitor(
 
             for (id, inst) in new_map.iter_mut() {
                 if inst.status == "executing" {
+                    let is_mid_tool = inst
+                        .last_hook_event
+                        .as_ref()
+                        .map(|e| e.event == "PreToolUse")
+                        .unwrap_or(false);
+
                     if inst.last_activity > 0
                         && now_secs - inst.last_activity > EXECUTING_TIMEOUT_SECS
+                        && !is_mid_tool
                     {
                         inst.status = "waiting".to_string();
                         if !notified_map.get(id).copied().unwrap_or(false) {
@@ -788,7 +731,7 @@ fn main() {
             start_state_monitor(instances.clone(), adapter_states.clone(), registry.clone(), app.handle().clone());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_instances, jump_to_terminal, respond_permission, get_instance_preview, resize_window_centered, bring_to_front])
+        .invoke_handler(tauri::generate_handler![get_instances, jump_to_terminal, get_instance_preview, resize_window_centered, bring_to_front])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
