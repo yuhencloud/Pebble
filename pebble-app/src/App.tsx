@@ -419,6 +419,21 @@ function App() {
     };
   }, []);
 
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let mounted = true;
+    (async () => {
+      unlisten = await listen<void>("tray-show-expand", () => {
+        if (!mounted) return;
+        expandPanelRef.current();
+      });
+    })();
+    return () => {
+      mounted = false;
+      if (unlisten) unlisten();
+    };
+  }, []);
+
   const realInstances = useMemo(() => {
     const statusOrder: Record<string, number> = {
       needs_permission: 0,
