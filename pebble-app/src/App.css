@@ -455,6 +455,13 @@ body,
   word-break: break-word;
 }
 
+.permission-hint {
+  font-size: 12px;
+  color: #ff8c42;
+  margin-top: 8px;
+  text-align: center;
+}
+
 .subagents {
   padding: 0 10px 10px;
 }

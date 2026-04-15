@@ -230,15 +230,12 @@ function MiniPet({ status }: { status: string }) {
 function InstanceCard({
   inst,
   onClick,
-  onRespond,
   onSubagentClick,
 }: {
   inst: Instance;
   onClick: () => void;
-  onRespond?: (choice: string) => void;
   onSubagentClick?: () => void;
 }) {
-  const [responding, setResponding] = useState(false);
   const [expandedSubagents, setExpandedSubagents] = useState(false);
 
   const displayPreview = useMemo(() => {
@@ -256,16 +253,6 @@ function InstanceCard({
 
   const sessionName = getSessionName(inst);
   const runtime = inst.session_start != null ? formatDuration(inst.session_start) : formatTimeAgo(inst.last_activity);
-
-  const handleRespond = async (choice: string) => {
-    if (responding || !onRespond) return;
-    setResponding(true);
-    try {
-      await onRespond(choice);
-    } finally {
-      setResponding(false);
-    }
-  };
 
   return (
     <div className={`instance instance--${inst.status}`}>
@@ -305,21 +292,8 @@ function InstanceCard({
               {inst.pending_permission.details}
             </div>
           )}
-          <div className="permission-choices">
-            {inst.pending_permission.choices.map((choice) => (
-              <button
-                key={choice}
-                className={`permission-btn ${
-                  inst.pending_permission?.default_choice === choice
-                    ? "permission-btn--default"
-                    : ""
-                }`}
-                onClick={() => handleRespond(choice)}
-                disabled={responding}
-              >
-                {choice}
-              </button>
-            ))}
+          <div className="permission-hint">
+            请在终端中处理此请求
           </div>
         </div>
       )}
@@ -579,21 +553,6 @@ function App() {
     }
   };
 
-  const respondPermission = async (instanceId: string, choice: string) => {
-    try {
-      await invoke("respond_permission", { instanceId, choice });
-      setInstances((prev) =>
-        prev.map((i) =>
-          i.id === instanceId
-            ? { ...i, status: "executing", pending_permission: undefined }
-            : i
-        )
-      );
-    } catch (e) {
-      console.error("Failed to respond:", e);
-    }
-  };
-
 
   const R = FILLET_R;
   const W = expanded ? EXPANDED_W : COLLAPSED_W;
@@ -656,7 +615,6 @@ function App() {
                 key={inst.id}
                 inst={inst}
                 onClick={() => jumpToTerminal(inst.id)}
-                onRespond={(choice) => respondPermission(inst.id, choice)}
                 onSubagentClick={() => jumpToTerminal(inst.id)}
               />
             ))}
