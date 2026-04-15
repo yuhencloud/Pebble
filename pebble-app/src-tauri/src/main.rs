@@ -578,6 +578,7 @@ fn main() {
                 .as_secs();
 
             let mut matched_id: Option<String> = None;
+            let has_sender_pid = payload.sender_pid.is_some();
             if let Some(spid) = payload.sender_pid {
                 let candidate_id = format!("cc-{spid}");
                 if let Some(inst) = map.get(&candidate_id) {
@@ -585,13 +586,18 @@ fn main() {
                         matched_id = Some(candidate_id);
                     }
                 }
+                // When sender_pid is known but not yet in the map (e.g. hook
+                // arrived before periodic discovery), skip directory-based
+                // fallback matching entirely — otherwise a second instance in
+                // the same directory would incorrectly match and overwrite the
+                // first instance's data.  Fall through to create a new entry.
             }
-            if matched_id.is_none() {
+            if matched_id.is_none() && !has_sender_pid {
                 if let Some(ref tp) = payload.transcript_path {
                     matched_id = map.values().find(|i| i.transcript_path.as_ref() == Some(tp)).map(|i| i.id.clone());
                 }
             }
-            if matched_id.is_none() {
+            if matched_id.is_none() && !has_sender_pid {
                 // Prefer blank instances (no transcript_path / no hook event) to avoid
                 // cross-contaminating active instances when multiple sessions share cwd.
                 let mut blank_candidate: Option<&Instance> = None;
@@ -612,7 +618,7 @@ fn main() {
                     }
                 }
             }
-            if matched_id.is_none() {
+            if matched_id.is_none() && !has_sender_pid {
                 let mut blank_candidate: Option<&Instance> = None;
                 let mut max_la = 0u64;
                 for i in map.values() {
