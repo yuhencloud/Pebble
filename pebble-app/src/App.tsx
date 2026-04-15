@@ -355,6 +355,7 @@ function App() {
   useEffect(() => {
     expandedRef.current = expanded;
   }, [expanded]);
+  const lastTrayToggleRef = useRef(0);
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -430,10 +431,13 @@ function App() {
     (async () => {
       unlisten = await listen<void>("tray-toggle", () => {
         if (!mounted) return;
+        const now = Date.now();
+        if (now - lastTrayToggleRef.current < 300) return;
+        lastTrayToggleRef.current = now;
         if (expandedRef.current) {
           collapsePanelRef.current();
         } else {
-          ignoreHoverUntilRef.current = Date.now() + 300;
+          ignoreHoverUntilRef.current = now + 800;
           expandPanelRef.current();
         }
       });
