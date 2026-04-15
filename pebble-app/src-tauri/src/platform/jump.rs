@@ -258,7 +258,6 @@ mod win {
                 match activate_wezterm_pane(pane, wezterm_unix_socket) {
                     Ok(()) => {
                         eprintln!("[pebble-jump] WezTerm pane activated successfully");
-                        return Ok(());
                     }
                     Err(e) => eprintln!("[pebble-jump] WezTerm pane activation failed: {}, falling back", e),
                 }
