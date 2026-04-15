@@ -751,6 +751,39 @@ fn main() {
                     start_hover_tracker(window, hover_running.clone());
                 }
             }
+            // Setup system tray
+            {
+                let menu = tauri::menu::Menu::with_items(
+                    app,
+                    &[&tauri::menu::MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?],
+                )?;
+                let tray_icon = tauri::image::Image::from_bytes(
+                    include_bytes!("../icons/tray-icon.png")
+                )?;
+                let _tray = tauri::tray::TrayIconBuilder::new()
+                    .icon(tray_icon)
+                    .menu(&menu)
+                    .show_menu_on_left_click(false)
+                    .on_menu_event(|app, event| {
+                        if event.id.as_ref() == "quit" {
+                            app.exit(0);
+                        }
+                    })
+                    .on_tray_icon_event(|tray, event| {
+                        if let tauri::tray::TrayIconEvent::Click {
+                            button: tauri::tray::MouseButton::Left,
+                            ..
+                        } = event
+                        {
+                            if let Some(window) = tray.app_handle().get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                                let _ = window.emit("tray-show-expand", ());
+                            }
+                        }
+                    })
+                    .build(app)?;
+            }
             start_state_monitor(instances.clone(), adapter_states.clone(), registry.clone(), app.handle().clone());
             Ok(())
         })
