@@ -766,6 +766,8 @@ fn main() {
         .setup(move |app| {
             #[cfg(target_os = "macos")]
             {
+                let _ = app.handle().set_activation_policy(tauri::ActivationPolicy::Accessory);
+
                 if let Some(window) = app.handle().get_webview_window("main") {
                     let _ = window.set_resizable(false);
                     let _ = window.set_size(tauri::Size::Logical(
