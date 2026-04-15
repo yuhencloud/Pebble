@@ -776,9 +776,14 @@ fn main() {
                         } = event
                         {
                             if let Some(window) = tray.app_handle().get_webview_window("main") {
-                                let _ = window.show();
-                                let _ = window.set_focus();
-                                let _ = window.emit("tray-show-expand", ());
+                                if let Ok(true) = window.is_visible() {
+                                    let _ = window.hide();
+                                    let _ = window.emit("tray-hide-collapse", ());
+                                } else {
+                                    let _ = window.show();
+                                    let _ = window.set_focus();
+                                    let _ = window.emit("tray-show-expand", ());
+                                }
                             }
                         }
                     })

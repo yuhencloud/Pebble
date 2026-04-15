@@ -126,9 +126,9 @@ def main():
     icon_dir = os.path.join(os.path.dirname(__file__), 'src-tauri', 'icons')
     os.makedirs(icon_dir, exist_ok=True)
 
-    tray_img = draw_tray_icon(64)
+    tray_img = draw_tray_icon(128)
     tray_img.save(os.path.join(icon_dir, 'tray-icon.png'), 'PNG')
-    print("Generated tray-icon.png (64x64)")
+    print("Generated tray-icon.png (128x128)")
 
     sizes = {
         'icon.png': 512,
