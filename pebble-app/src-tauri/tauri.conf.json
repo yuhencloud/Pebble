@@ -39,10 +39,8 @@
     "active": true,
     "targets": "all",
     "icon": [
-      "icons/icon.png"
-    ],
-    "externalBin": [
-      "bin/pebble-bridge"
+      "icons/icon.png",
+      "icons/icon.ico"
     ]
   }
 }
