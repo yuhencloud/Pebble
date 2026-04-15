@@ -246,7 +246,7 @@ impl Adapter for ClaudeAdapter {
                 _ => "waiting",
             };
             state.status = new_status.to_string();
-            state.pending_permission = None;
+            Self::clear_stale_permission(state);
         }
     }
 
@@ -344,6 +344,12 @@ impl ClaudeAdapter {
                 Some(old) if old == v => {}
                 _ => *current = Some(v.clone()),
             }
+        }
+    }
+
+    fn clear_stale_permission(state: &mut AdapterState) {
+        if state.pending_permission.is_some() {
+            state.pending_permission = None;
         }
     }
 
