@@ -104,16 +104,16 @@ function getCurrentAction(inst: Instance): string | null {
   if (!inst.last_hook_event) return null;
   const ev = inst.last_hook_event;
   if (ev.event === "PreToolUse" && ev.tool_name) {
-    return `Agent ${ev.tool_name}`;
+    return `Claude: Using ${ev.tool_name}`;
   }
   if (ev.event === "UserPromptSubmit") {
     return null; // handled in user message row
   }
   if (ev.event === "PostToolUse") {
-    return `${ev.tool_name || "Tool"} completed`;
+    return `Claude: ${ev.tool_name || "Tool"} completed`;
   }
   if (ev.event === "PostToolUseFailure") {
-    return `${ev.tool_name || "Tool"} failed`;
+    return `Claude: ${ev.tool_name || "Tool"} failed`;
   }
   return null;
 
@@ -245,10 +245,12 @@ function InstanceCard({
     if (inst.conversation_log && inst.conversation_log.length > 0) {
       return inst.conversation_log.join("\n");
     }
+    const lines: string[] = [];
     const msg = getUserMessage(inst);
-    if (msg) return msg;
+    if (msg) lines.push(msg);
     const action = getCurrentAction(inst);
-    if (action) return action;
+    if (action) lines.push(action);
+    if (lines.length > 0) return lines.join("\n");
     return "No recent activity";
   }, [inst]);
 

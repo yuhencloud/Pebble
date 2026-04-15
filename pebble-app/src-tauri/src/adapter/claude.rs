@@ -275,7 +275,10 @@ impl Adapter for ClaudeAdapter {
 
         let action_line = if let Some(ref event) = state.last_hook_event {
             if event.event == "PreToolUse" && event.tool_name.is_some() {
-                Some(format!("Using {}", event.tool_name.as_deref().unwrap_or("Tool")))
+                Some(format!(
+                    "Claude: Using {}",
+                    event.tool_name.as_deref().unwrap_or("Tool")
+                ))
             } else {
                 None
             }
@@ -287,7 +290,7 @@ impl Adapter for ClaudeAdapter {
             result.push(action);
         } else if let Some(ref assistant) = state.latest_assistant_preview {
             let truncated: String = assistant.chars().take(60).collect();
-            result.push(truncated);
+            result.push(format!("Claude: {}", truncated));
         }
 
         result.truncate(2);

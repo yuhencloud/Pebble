@@ -69,15 +69,15 @@ pub fn ensure_claude_hooks_config(bridge_path: &std::path::Path) {
     let cmd = bridge_path.to_string_lossy().replace('\\', "/");
 
     let pebble_hooks = serde_json::json!({
-        "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": format!("{} UserPromptSubmit", cmd) }] }],
-        "PreToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": format!("{} PreToolUse", cmd) }] }],
-        "PostToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": format!("{} PostToolUse", cmd) }] }],
-        "PostToolUseFailure": [{ "matcher": "*", "hooks": [{ "type": "command", "command": format!("{} PostToolUseFailure", cmd) }] }],
-        "PermissionRequest": [{ "matcher": "*", "hooks": [{ "type": "command", "command": format!("{} PermissionRequest", cmd), "timeout": 300 }] }],
-        "Stop": [{ "hooks": [{ "type": "command", "command": format!("{} Stop", cmd) }] }],
-        "SessionStart": [{ "hooks": [{ "type": "command", "command": format!("{} SessionStart", cmd) }] }],
-        "SubagentStart": [{ "matcher": "*", "hooks": [{ "type": "command", "command": format!("{} SubagentStart", cmd) }] }],
-        "SubagentStop": [{ "matcher": "*", "hooks": [{ "type": "command", "command": format!("{} SubagentStop", cmd) }] }]
+        "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": format!("{} UserPromptSubmit --source claude", cmd) }] }],
+        "PreToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": format!("{} PreToolUse --source claude", cmd) }] }],
+        "PostToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": format!("{} PostToolUse --source claude", cmd) }] }],
+        "PostToolUseFailure": [{ "matcher": "*", "hooks": [{ "type": "command", "command": format!("{} PostToolUseFailure --source claude", cmd) }] }],
+        "PermissionRequest": [{ "matcher": "*", "hooks": [{ "type": "command", "command": format!("{} PermissionRequest --source claude", cmd), "timeout": 300 }] }],
+        "Stop": [{ "hooks": [{ "type": "command", "command": format!("{} Stop --source claude", cmd) }] }],
+        "SessionStart": [{ "hooks": [{ "type": "command", "command": format!("{} SessionStart --source claude", cmd) }] }],
+        "SubagentStart": [{ "matcher": "*", "hooks": [{ "type": "command", "command": format!("{} SubagentStart --source claude", cmd) }] }],
+        "SubagentStop": [{ "matcher": "*", "hooks": [{ "type": "command", "command": format!("{} SubagentStop --source claude", cmd) }] }]
     });
 
     let existing_hooks = settings.get("hooks").cloned().unwrap_or(serde_json::json!({}));

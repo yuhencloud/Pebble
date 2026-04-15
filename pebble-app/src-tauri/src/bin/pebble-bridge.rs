@@ -61,7 +61,17 @@ fn normalize_path(p: &str) -> String {
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let event_type = std::env::args().nth(1).unwrap_or_else(|| "unknown".to_string());
+    let mut args = std::env::args().skip(1);
+    let mut event_type = None;
+    let mut source = None;
+    while let Some(arg) = args.next() {
+        if arg == "--source" {
+            source = args.next();
+        } else if !arg.starts_with('-') && event_type.is_none() {
+            event_type = Some(arg);
+        }
+    }
+    let event_type = event_type.unwrap_or_else(|| "unknown".to_string());
     let cwd = std::env::current_dir()
         .unwrap_or_default()
         .to_string_lossy()
@@ -107,6 +117,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "cwd": cwd,
         "timestamp": timestamp,
     });
+    if let Some(src) = source {
+        body["source"] = serde_json::json!(src);
+    }
     if let Some(pid) = sender_pid {
         body["sender_pid"] = serde_json::json!(pid);
     }
