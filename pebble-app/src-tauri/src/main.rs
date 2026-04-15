@@ -54,6 +54,16 @@ fn get_instances(state: State<'_, AppState>) -> Vec<Instance> {
 
 #[tauri::command]
 fn jump_to_terminal(instance_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    // Clear stale permission when user explicitly jumps to terminal
+    {
+        let mut map = state.instances.lock();
+        if let Some(inst) = map.values_mut().find(|i| i.id == instance_id) {
+            if inst.status == "needs_permission" && inst.pending_permission.is_some() {
+                inst.status = "executing".to_string();
+                inst.pending_permission = None;
+            }
+        }
+    }
     let instance = {
         let map = state.instances.lock();
         map.values()
