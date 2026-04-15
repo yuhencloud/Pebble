@@ -73,9 +73,62 @@ def draw_capybara_icon(size):
 
     return img
 
+def draw_tray_icon(size):
+    """Draw the capybara sprite on a transparent background (no border)."""
+    img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+    body_color = (166, 124, 82)
+    ear_color = (196, 154, 112)
+    eye_color = (26, 22, 37)
+    leg_color = body_color
+
+    sprite = [
+        "  ee    ee  ",
+        " bbbbbbbbbb ",
+        "boobbbbbboob",
+        "bbbbbbbbbbbb",
+        "bbbbbbbbbbbb",
+        "bbbbbbbbbbbb",
+        " bbbbbbbbbb ",
+        "  bbbbbbbb  ",
+        " l l ll l l ",
+        " l l ll l l ",
+    ]
+
+    cols = len(sprite[0])
+    rows = len(sprite)
+    pixel_block = max(2, round(size * 0.55 / cols))
+    sprite_w = cols * pixel_block
+    sprite_h = rows * pixel_block
+    cx = (size - sprite_w) // 2
+    cy = (size - sprite_h) // 2 + 1
+
+    for row_idx, row in enumerate(sprite):
+        for col_idx, ch in enumerate(row):
+            if ch == ' ':
+                continue
+            x1 = cx + col_idx * pixel_block
+            y1 = cy + row_idx * pixel_block
+            x2 = x1 + pixel_block - 1
+            y2 = y1 + pixel_block - 1
+            if ch == 'e':
+                color = ear_color
+            elif ch == 'b' or ch == 'l':
+                color = leg_color
+            elif ch == 'o':
+                color = eye_color
+            else:
+                continue
+            draw = ImageDraw.Draw(img)
+            draw.rectangle([x1, y1, x2, y2], fill=(*color, 255))
+    return img
+
 def main():
     icon_dir = os.path.join(os.path.dirname(__file__), 'src-tauri', 'icons')
     os.makedirs(icon_dir, exist_ok=True)
+
+    tray_img = draw_tray_icon(64)
+    tray_img.save(os.path.join(icon_dir, 'tray-icon.png'), 'PNG')
+    print("Generated tray-icon.png (64x64)")
 
     sizes = {
         'icon.png': 512,
