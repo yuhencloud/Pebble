@@ -403,6 +403,7 @@ function App() {
 
   const expandPanelRef = useRef<() => void>(() => {});
   const collapsePanelRef = useRef<() => void>(() => {});
+  const ignoreHoverUntilRef = useRef<number>(0);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -412,7 +413,7 @@ function App() {
         if (!mounted) return;
         if (e.payload) {
           expandPanelRef.current();
-        } else {
+        } else if (Date.now() > ignoreHoverUntilRef.current) {
           collapsePanelRef.current();
         }
       });
@@ -432,6 +433,7 @@ function App() {
         if (expandedRef.current) {
           collapsePanelRef.current();
         } else {
+          ignoreHoverUntilRef.current = Date.now() + 300;
           expandPanelRef.current();
         }
       });
