@@ -96,7 +96,7 @@ def draw_tray_icon(size):
 
     cols = len(sprite[0])
     rows = len(sprite)
-    pixel_block = max(2, round(size * 0.55 / cols))
+    pixel_block = max(2, size // cols)
     sprite_w = cols * pixel_block
     sprite_h = rows * pixel_block
     cx = (size - sprite_w) // 2
@@ -126,9 +126,9 @@ def main():
     icon_dir = os.path.join(os.path.dirname(__file__), 'src-tauri', 'icons')
     os.makedirs(icon_dir, exist_ok=True)
 
-    tray_img = draw_tray_icon(128)
+    tray_img = draw_tray_icon(256)
     tray_img.save(os.path.join(icon_dir, 'tray-icon.png'), 'PNG')
-    print("Generated tray-icon.png (128x128)")
+    print("Generated tray-icon.png (256x256)")
 
     sizes = {
         'icon.png': 512,
