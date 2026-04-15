@@ -291,7 +291,7 @@ function InstanceCard({
       {inst.status === "needs_permission" && inst.pending_permission && (
         <div className="permission-card" onClick={(e) => e.stopPropagation()}>
           <div className="permission-title">
-            {inst.pending_permission.tool_name} 请求
+            {inst.pending_permission.tool_name} request
           </div>
           {inst.pending_permission.details && (
             <div className="permission-details" title={inst.pending_permission.details}>
@@ -299,7 +299,7 @@ function InstanceCard({
             </div>
           )}
           <div className="permission-hint">
-            请在终端中处理此请求
+            Please handle this request in the terminal
           </div>
         </div>
       )}
