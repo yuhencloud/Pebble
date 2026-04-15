@@ -27,7 +27,7 @@ Pebble 通过一个**非侵入式的浮动面板**解决这些问题：
 - 一眼看清所有会话的实时状态
 - 任务完成后发送系统原生通知
 - 一键跳转到对应的终端标签页
-- 直接在面板上审批权限请求
+- 直接在面板上查看权限请求提示
 
 ---
 
@@ -36,9 +36,11 @@ Pebble 通过一个**非侵入式的浮动面板**解决这些问题：
 ### 已实现
 - **自动发现**：自动扫描系统中的 `claude` 进程
 - **实时状态监控**：通过 Claude Code hooks 实时显示 `waiting` / `executing` / `needs_permission` 状态
-- **系统通知**：任务完成后发送 macOS 原生通知
+- **系统通知**：任务完成后发送 macOS / Windows 原生通知
+- **系统托盘图标**：macOS 和 Windows 均支持像素风卡皮巴拉托盘图标，右键可退出
+- **托盘切换**：左键点击托盘图标可显示/隐藏并展开/收起面板
 - **iTerm2 精准跳转**：点击实例即可通过 AppleScript 聚焦到对应的 iTerm2 标签页/窗格
-- **权限审批**：直接在面板上响应 Claude Code 的权限请求（支持多选）
+- **权限只读提示**：在面板上看到哪个工具正在请求权限，然后在终端中处理
 - **刘海风格面板**：顶部采用内凹圆角设计，与 MacBook 刘海自然融合
 - **置顶浮动窗口**：始终可见，但不会抢夺编辑器焦点
 - **零配置**：首次启动自动注册 Claude Code hooks
@@ -73,14 +75,27 @@ npm run tauri build -- --target aarch64-apple-darwin
 src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Pebble.app
 ```
 
+### Windows
+
+从源码构建：
+
+```bash
+git clone https://github.com/yuhencloud/Pebble.git
+cd Pebble/pebble-app
+npm install
+npm run tauri build
+```
+
+构建完成后，安装包位于：
+```
+src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/Pebble_0.1.0_x64_en-US.msi
+```
+
 ### 环境要求
 - macOS 14+（主要支持平台）
+- Windows 10/11
 - Node.js 20+
 - Rust 1.70+
-
-### Windows / Linux
-
-架构上基于 Tauri 是跨平台的，但 iTerm2 跳转和终端检测目前仅支持 macOS。欢迎贡献代码！
 
 ---
 
@@ -92,7 +107,8 @@ src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Pebble.app
 4. **点击实例** — 直接跳转到对应的 iTerm2 标签页
 5. **向 Claude Code 发送消息** — 状态点会变为绿色（`executing`）
 6. **等待约 30 秒** — 状态变回黄色（`waiting`），同时弹出系统通知
-7. **权限审批** — 当面板上显示红色权限卡片时，直接点击选项即可审批
+7. **处理权限** — 当面板显示红色权限卡片时，前往终端进行审批
+8. **使用托盘图标** — 左键点击切换面板，右键打开菜单
 
 ---
 
@@ -115,7 +131,7 @@ pebble-app/
 │   ├── App.css           # 面板样式
 │   └── main.tsx          # React 入口
 ├── src-tauri/            # Rust 后端
-│   ├── src/main.rs       # 核心逻辑（发现、hooks、iTerm2 跳转）
+│   ├── src/main.rs       # 核心逻辑（发现、hooks、托盘、iTerm2 跳转）
 │   ├── Cargo.toml        # Rust 依赖
 │   └── tauri.conf.json   # 应用窗口配置
 ├── package.json
@@ -135,6 +151,7 @@ pebble-app/
 │  - 进程发现      │  - 状态指示器         │
 │  - 终端跳转      │  - 通知管理           │
 │  - IPC 桥接     │  - 浮动面板            │
+│  - 系统托盘     │  - 权限提示            │
 └──────────────────┴──────────────────────┘
          │                    │
          ▼                    ▼
@@ -142,6 +159,7 @@ pebble-app/
 │   Claude Code   │  │     系统 API      │
 │  Hooks / Events │  │  - 系统通知        │
 │                 │  │  - 窗口管理        │
+│                 │  │  - 托盘图标        │
 │                 │  │  - 终端聚焦        │
 └─────────────────┘  └───────────────────┘
 ```
@@ -151,6 +169,8 @@ pebble-app/
 **Hook 事件**：Pebble 启动本地 HTTP 服务器（`127.0.0.1:9876`），并在首次启动时自动往你的 `~/.claude/settings.json` 里写入 hook 命令。当 Claude Code 触发事件（`UserPromptSubmit`、`PostToolUse`、`Stop`）时，一个极小的 Node.js 桥接脚本会把事件转发给 Pebble。
 
 **状态推断**：`UserPromptSubmit` 会将状态设为 `executing`。如果超过 30 秒没有新的事件到达，状态会恢复为 `waiting`，并触发系统通知。
+
+**托盘图标**：左键点击托盘图标会显示窗口，并在展开和收起状态之间切换。右键点击会打开包含 "Quit" 选项的上下文菜单。
 
 **iTerm2 跳转**：点击某个实例时，Pebble 会读取该进程的 TTY，然后通过 AppleScript 遍历 iTerm2 的窗口/标签页/会话，精准聚焦到匹配的标签页。
 

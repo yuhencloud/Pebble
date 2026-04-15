@@ -27,7 +27,7 @@ Pebble solves this by providing a **non-intrusive floating panel** that:
 - Shows real-time status at a glance
 - Notifies you when tasks complete
 - Jumps directly to the correct terminal pane with one click
-- Lets you approve permission requests right from the panel
+- Lets you monitor permission requests right from the panel
 
 ---
 
@@ -36,9 +36,11 @@ Pebble solves this by providing a **non-intrusive floating panel** that:
 ### MVP (Current)
 - **Auto-Discovery**: Scans the system for running `claude` processes automatically
 - **Real-Time Status Monitor**: Displays `waiting` / `executing` / `needs_permission` states updated via Claude Code hooks
-- **System Notifications**: Sends native macOS notifications when a task completes
+- **System Notifications**: Sends native macOS and Windows notifications when a task completes
+- **System Tray Icon**: Pixel-art capybara tray icon on macOS and Windows with a "Quit" menu
+- **Tray Toggle**: Left-click the tray icon to show/hide and expand/collapse the panel
 - **iTerm2 Precise Jump**: Click any instance to focus the exact iTerm2 tab/pane via AppleScript
-- **GUI Permission Approval**: Respond to Claude Code permission requests (including multi-choice) directly from the panel
+- **Permission Read-Only Alert**: See which tool is requesting permission and handle it in the terminal
 - **Notch-Style Panel**: Concave fillets at the top corners blend seamlessly with the MacBook notch
 - **Always-On-Top Floating Panel**: Stays visible without stealing focus from your editor
 - **Zero Config Setup**: Automatically registers Claude Code hooks on first launch
@@ -73,13 +75,27 @@ The built app will be available at:
 src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Pebble.app
 ```
 
+### Windows
+
+Build from source:
+
+```bash
+git clone https://github.com/yuhencloud/Pebble.git
+cd Pebble/pebble-app
+npm install
+npm run tauri build
+```
+
+The built app will be available at:
+```
+src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/Pebble_0.1.0_x64_en-US.msi
+```
+
 ### Requirements
 - macOS 14+ (primary target)
+- Windows 10/11
 - Node.js 20+
 - Rust 1.70+
-
-### Windows / Linux
-Architecture is cross-platform via Tauri, but iTerm2 jump and terminal detection are currently macOS-only. Contributions welcome!
 
 ---
 
@@ -91,7 +107,8 @@ Architecture is cross-platform via Tauri, but iTerm2 jump and terminal detection
 4. **Click an instance** to jump directly to its iTerm2 pane
 5. **Send a message to Claude Code** — the status dot will turn green (`executing`)
 6. **Wait ~30 seconds after completion** — it turns yellow (`waiting`) and a native notification appears
-7. **Approve permissions** — when a red permission card appears on the panel, click an option to respond
+7. **Handle permissions** — when a red permission card appears on the panel, go to the terminal to respond
+8. **Use the tray icon** — left-click to toggle the panel, right-click for the menu
 
 ---
 
@@ -114,7 +131,7 @@ pebble-app/
 │   ├── App.css           # Panel styles
 │   └── main.tsx          # React entry
 ├── src-tauri/            # Rust backend
-│   ├── src/main.rs       # Core logic (discovery, hooks, iTerm2 jump)
+│   ├── src/main.rs       # Core logic (discovery, hooks, tray, iTerm2 jump)
 │   ├── Cargo.toml        # Rust dependencies
 │   └── tauri.conf.json   # App window configuration
 ├── package.json
@@ -134,6 +151,7 @@ pebble-app/
 │  - Process disco │  - Status indicators │
 │  - Terminal jump │  - Notification mgr  │
 │  - IPC bridge    │  - Floating panel    │
+│  - System tray   │  - Permission hints  │
 └──────────────────┴──────────────────────┘
          │                    │
          ▼                    ▼
@@ -141,7 +159,8 @@ pebble-app/
 │  Claude Code    │  │  System APIs      │
 │  Hooks / Events │  │  - Notifications  │
 │                 │  │  - Window mgmt    │
-│                 │  │  - Terminal focus  │
+│                 │  │  - Tray icon      │
+│                 │  │  - Terminal focus │
 └─────────────────┘  └───────────────────┘
 ```
 
@@ -150,6 +169,8 @@ pebble-app/
 **Hook Events**: Pebble starts a local HTTP server (`127.0.0.1:9876`) and writes hook commands into your `~/.claude/settings.json`. When Claude Code triggers events (`UserPromptSubmit`, `PostToolUse`, `Stop`), a tiny Node.js bridge script forwards them to Pebble.
 
 **Status Inference**: `UserPromptSubmit` sets status to `executing`. If no hook events arrive for 30 seconds, the status returns to `waiting` and a system notification is fired.
+
+**Tray Icon**: Left-clicking the tray icon shows the window and toggles the panel between expanded and collapsed. Right-clicking opens a context menu with a "Quit" option.
 
 **iTerm2 Jump**: Clicking an instance reads the process TTY, then uses AppleScript to iterate iTerm2 windows/tabs/sessions and focus the matching one.
 
