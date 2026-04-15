@@ -45,6 +45,7 @@ interface Instance {
   session_start?: number;
   transcript_path?: string;
   session_name?: string;
+  source?: string;
 }
 
 const FILLET_R = 12;
@@ -264,11 +265,16 @@ function InstanceCard({
               {sessionName}
             </span>
             <div className="instance-badges">
-              <span className="badge badge--agent">{inst.model || "Claude"}</span>
               {inst.permission_mode && (
                 <span className="badge badge--mode">{inst.permission_mode}</span>
               )}
               <span className="badge badge--time">{runtime}</span>
+              {inst.source && (
+                <span className="badge badge--agent">{inst.source}</span>
+              )}
+              {inst.terminal_app && (
+                <span className="badge badge--terminal">{inst.terminal_app}</span>
+              )}
             </div>
           </div>
 

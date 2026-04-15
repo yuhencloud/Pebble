@@ -35,6 +35,7 @@ pub struct HookPayload {
     pub wezterm_unix_socket: Option<String>,
     pub agent_id: Option<String>,
     pub agent_type: Option<String>,
+    pub source: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -66,6 +67,7 @@ pub struct AdapterState {
     pub subagents_bootstrapped: bool,
     pub latest_user_preview: Option<String>,
     pub latest_assistant_preview: Option<String>,
+    pub source: Option<String>,
 }
 
 impl Default for AdapterState {
@@ -89,6 +91,7 @@ impl Default for AdapterState {
             subagents_bootstrapped: false,
             latest_user_preview: None,
             latest_assistant_preview: None,
+            source: None,
         }
     }
 }

@@ -158,14 +158,15 @@ where
         };
         let body = &req[body_start + 4..];
         if let Ok(payload) = serde_json::from_str::<crate::types::IncomingHookPayload>(body) {
-            log_event(&format!("event={} tool={:?} mode={:?} tool_use_id={:?} ts={} pane={:?} wt_session={:?}",
+            log_event(&format!("event={} tool={:?} mode={:?} tool_use_id={:?} ts={} pane={:?} wt_session={:?} source={:?}",
                 payload.event,
                 payload.tool_name,
                 payload.permission_mode,
                 payload.tool_use_id,
                 payload.timestamp,
                 payload.wezterm_pane_id,
-                payload.wt_session_id
+                payload.wt_session_id,
+                payload.source
             ));
             handler.lock()(&payload);
             let should_block = payload.event == "PermissionRequest"

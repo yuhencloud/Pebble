@@ -127,6 +127,9 @@ impl Adapter for ClaudeAdapter {
         Self::update_opt_string(&mut state.wezterm_pane_id, payload.wezterm_pane_id.as_ref());
         Self::update_opt_string(&mut state.wt_session_id, payload.wt_session_id.as_ref());
         Self::update_opt_string(&mut state.wezterm_unix_socket, payload.wezterm_unix_socket.as_ref());
+        if let Some(ref s) = payload.source {
+            state.source = Some(s.clone());
+        }
         if let Some(ref m) = payload.model {
             state.model = Some(m.clone());
         }
@@ -441,6 +444,7 @@ mod tests {
             wezterm_unix_socket: None,
             agent_id: Some("agent-123".to_string()),
             agent_type: Some("Explore".to_string()),
+            source: None,
         };
 
         adapter.handle_hook(&payload, &mut state, &mut std::collections::HashMap::new());
@@ -480,6 +484,7 @@ mod tests {
             wezterm_unix_socket: None,
             agent_id: None,
             agent_type: None,
+            source: None,
         };
 
         assert!(!state.subagents_bootstrapped);

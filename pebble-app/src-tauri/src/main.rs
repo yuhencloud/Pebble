@@ -90,6 +90,7 @@ fn jump_to_terminal(instance_id: String, state: State<'_, AppState>) -> Result<(
         wezterm_unix_socket: None,
         agent_id: None,
         agent_type: None,
+        source: None,
     }).ok_or("No adapter found")?;
     adapter.jump_to_terminal(&instance)
 }
@@ -199,6 +200,7 @@ fn get_instance_preview(instance_id: String, state: State<'_, AppState>) -> Resu
         wezterm_unix_socket: None,
         agent_id: None,
         agent_type: None,
+        source: None,
     }).ok_or("No adapter found")?;
 
     let states = state.adapter_states.lock();
@@ -251,6 +253,7 @@ fn start_state_monitor(
                     wezterm_pane_id: None,
                     wt_session_id: None,
                     wezterm_unix_socket: None,
+                    source: None,
                 };
                 if let Some(existing) = map.get(&id) {
                     instance.status = existing.status.clone();
@@ -268,6 +271,7 @@ fn start_state_monitor(
                     instance.wezterm_pane_id = existing.wezterm_pane_id.clone();
                     instance.wt_session_id = existing.wt_session_id.clone();
                     instance.wezterm_unix_socket = existing.wezterm_unix_socket.clone();
+                    instance.source = existing.source.clone();
                 }
 
                 let adapter = registry.adapters.first().map(|a| a.as_ref());
@@ -309,6 +313,9 @@ fn start_state_monitor(
                     }
                     if state.wezterm_unix_socket.is_some() {
                         instance.wezterm_unix_socket = state.wezterm_unix_socket.clone();
+                    }
+                    if state.source.is_some() {
+                        instance.source = state.source.clone();
                     }
                     instance.subagents = adapter.get_subagents(&mut state);
                 }
@@ -357,6 +364,9 @@ fn start_state_monitor(
                             }
                             if inst.wezterm_unix_socket.is_some() {
                                 disc.wezterm_unix_socket.clone_from(&inst.wezterm_unix_socket);
+                            }
+                            if inst.source.is_some() {
+                                disc.source.clone_from(&inst.source);
                             }
                             if inst.pending_permission.is_some() {
                                 disc.pending_permission.clone_from(&inst.pending_permission);
@@ -553,6 +563,7 @@ fn main() {
                 wezterm_unix_socket: payload.wezterm_unix_socket.clone(),
                 agent_id: payload.agent_id.clone(),
                 agent_type: payload.agent_type.clone(),
+                source: payload.source.clone(),
                     };
 
             let adapter = match registry_for_hook.find_adapter_for_event(&hook_payload) {
@@ -640,6 +651,7 @@ fn main() {
                     instance.wezterm_pane_id = adapter_state.wezterm_pane_id.clone().or(instance.wezterm_pane_id.clone());
                     instance.wt_session_id = adapter_state.wt_session_id.clone().or(instance.wt_session_id.clone());
                     instance.wezterm_unix_socket = adapter_state.wezterm_unix_socket.clone().or(instance.wezterm_unix_socket.clone());
+                    instance.source = adapter_state.source.clone().or(instance.source.clone());
                     instance.subagents = adapter.get_subagents(&mut adapter_state);
                     states.insert(id.clone(), adapter_state);
                     map.insert(id.clone(), instance);
@@ -672,6 +684,7 @@ fn main() {
                     wezterm_pane_id: new_state.wezterm_pane_id.clone(),
                     wt_session_id: new_state.wt_session_id.clone(),
                     wezterm_unix_socket: new_state.wezterm_unix_socket.clone(),
+                    source: new_state.source.clone(),
                 };
                 adapter_states_for_hook.lock().insert(id.clone(), new_state);
                 map.insert(id, instance);

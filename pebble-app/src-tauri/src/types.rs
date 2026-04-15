@@ -54,6 +54,8 @@ pub struct Instance {
     pub wt_session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wezterm_unix_socket: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -116,6 +118,8 @@ pub struct IncomingHookPayload {
     pub agent_id: Option<String>,
     #[serde(default, rename = "agent_type")]
     pub agent_type: Option<String>,
+    #[serde(default, rename = "source")]
+    pub source: Option<String>,
 }
 
 pub struct AppState {
