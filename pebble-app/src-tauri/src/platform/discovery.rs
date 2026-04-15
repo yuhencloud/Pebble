@@ -26,6 +26,11 @@ fn comm_without_exe(name: &str) -> &str {
     name.strip_suffix(".exe").unwrap_or(name)
 }
 
+/// Returns true for the Claude desktop app (Electron) rather than the CLI.
+fn is_desktop_claude(args: &str) -> bool {
+    args.contains("--type=") || args.contains("WindowsApps")
+}
+
 pub fn find_claude_processes() -> Vec<ProcessInfo> {
     let all = list_processes();
     let mut claude_pids: HashSet<u32> = HashSet::new();
@@ -44,7 +49,9 @@ pub fn find_claude_processes() -> Vec<ProcessInfo> {
             let comm = comm_without_exe(&p.comm);
             let is_claude = comm == "claude" || comm == "claude-code"
                 || (comm == "node" && p.args.contains("claude-code"));
-            is_claude && (!claude_pids.contains(&p.ppid) || p.ppid == p.pid)
+            is_claude
+                && (!claude_pids.contains(&p.ppid) || p.ppid == p.pid)
+                && !is_desktop_claude(&p.args)
         })
         .collect()
 }
