@@ -120,6 +120,14 @@ function getCurrentAction(inst: Instance): string | null {
 
 }
 
+function getModeClass(mode: string): string {
+  const m = mode.toLowerCase();
+  if (m.includes("accept") || m.includes("edits")) return "accept-edits";
+  if (m.includes("plan")) return "plan";
+  if (m.includes("bypass")) return "bypass";
+  return "default";
+}
+
 function getUserMessage(inst: Instance): string | null {
   if (!inst.last_hook_event) return null;
   const ev = inst.last_hook_event;
@@ -266,7 +274,9 @@ function InstanceCard({
             </span>
             <div className="instance-badges">
               {inst.permission_mode && (
-                <span className="badge badge--mode">{inst.permission_mode}</span>
+                <span className={`badge badge--mode badge--mode-${getModeClass(inst.permission_mode)}`}>
+                  {inst.permission_mode}
+                </span>
               )}
               <span className="badge badge--time">{runtime}</span>
               {inst.source && (

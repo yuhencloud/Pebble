@@ -559,6 +559,26 @@ body,
   background: rgba(99, 102, 241, 0.15);
 }
 
+.badge--mode-default {
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.badge--mode-accept-edits {
+  color: #aa83f8;
+  background: rgba(170, 131, 248, 0.15);
+}
+
+.badge--mode-plan {
+  color: #48968c;
+  background: rgba(72, 150, 140, 0.15);
+}
+
+.badge--mode-bypass {
+  color: #fe6b80;
+  background: rgba(254, 107, 128, 0.15);
+}
+
 /* Subagent color variants */
 .subagent--waiting {
   background: rgba(245, 158, 11, 0.12);
